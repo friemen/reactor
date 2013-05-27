@@ -50,21 +50,33 @@
 
 
 (defprotocol EventSource
-  (subscribe [this event-listener])
-  (unsubscribe [this event-listener])
-  (consume-event! [this])
-  (raise-event! [this evt]))
+  (subscribe [this event-listener]
+    "Subscribes event-listener fn to event source.
+     The event-listener is invoked with the event as argument.")
+  (unsubscribe [this event-listener]
+    "Removes the event-listener fn from the list of subscribers.")
+  (raise-event! [this evt]
+    "Sends a new event."))
 
 (defprotocol Signal
-  (add-listener [this signal-listener])
-  (remove-listener [this signal-listener])
-  (get-value [this])
-  (set-value! [this value]))
+  (add-listener [this signal-listener]
+    "Subscribes a signal-listener fn to this signal.
+     The signal-listener is invoked when the signals value changes.
+     The signal-listener function receives the new
+     value of the signal as only argument.")
+  (remove-listener [this signal-listener]
+    "Removes the signal-listener fn from the list of subscribers.")
+  (get-value [this]
+    "Returns the current value of this signal.")
+  (set-value! [this value]
+    "Sets the value of this signal."))
 
 
 ;; factories for event sources
 
-(defn make-eventsource []
+(defn make-eventsource
+  "Creates a new events ource."
+  []
   (let [a (atom nil)]
     (reify EventSource
       (subscribe [this event-listener]
@@ -74,10 +86,6 @@
       (unsubscribe [this key]
         (remove-watch a key)
         this)
-      (consume-event! [_]
-        (let [v (deref a)]
-          (reset! a nil)
-          v))
       (raise-event! [_ evt]
         (reset! a evt)))))
 
@@ -165,9 +173,23 @@
        newsig)))
 
 
+(defn switch-with
+  "Converts an event source to a signal. On each event
+   the given function is invoked with the current signals
+   value as first and the event as second parameter.
+   The result of the function is set as new value of the signal."
+  ([eventsource f]
+     (switch-with f nil))
+  ([eventsource f value]
+     (let [newsig (make-signal value)]
+       (subscribe eventsource #(set-value! newsig (f (get-value newsig) %)))
+       newsig)))
+
+
 (defn react-with
   "Subscribes f as listener to the event source and
-   returns the event source."
+   returns the event source. The function f receives
+   the event as argument, any return value is discarded."
   [eventsource f]
   (subscribe eventsource f))
 
@@ -240,7 +262,4 @@
    function execution is discarded."
   [input-signals f]
   (apply (partial bind nil f) input-signals))
-
-
-
 

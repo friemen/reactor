@@ -25,6 +25,19 @@
     (is (= "ALARM!" (get-value alarm-signal)))))
 
 
+(deftest allow-test
+  (let [e1 (make-eventsource)
+        e2 (-> e1 (allow #(not= "Foo" %)))
+        sig (-> e2 (switch ""))]
+    (is (= ""
+           (get-value sig)))
+    (raise-event! e1 "Foo")
+    (is (= ""
+           (get-value sig)))
+    (raise-event! e1 "Bar")
+    (is (= "Bar"
+           (get-value sig)))))
+
 ;; naive state machine implementation
 
 (defn- illegalstate

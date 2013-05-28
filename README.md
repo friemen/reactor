@@ -13,7 +13,7 @@ Concepts
 
 An event is something non-continuous that "happens".
 
-An occurence is a pair [timestamp, event].
+An occurence is a pair [event timestamp].
 
 A signal (a.k.a behaviour) is a value that possibly changes over time.
 
@@ -32,7 +32,7 @@ Example for event processing:
     
     (raise-event! e1 "Hello")
     (raise-event! e2 "World")
-    => prints "Hello"
+    => prints "[Hello 1369...]"
 
 Example for signal processing:
 
@@ -47,7 +47,7 @@ Example for signal processing:
                    (trigger #(when (> % 10) "ALARM!"))
                    (react-with #(println %))))
     => sum>10 is an event source. whenever sum's value > 10
-       the string "ALARM!" is printed.
+       the string "[ALARM! 1369...]" is printed.
 
 
 Current state
@@ -56,8 +56,6 @@ This library is currently purely experimental stuff.
 
 The implementation of EventSource and Signal is now based on Clojure atoms, 
 which is only one way. It seems -- for some use cases --
-entirely reasonable to base the implementation on queues and/or agents. 
-
-Occurences (pairs of time and event) are in the moment not represented in the code.
+entirely reasonable to base the implementation on refs, queues and/or agents. 
 
 

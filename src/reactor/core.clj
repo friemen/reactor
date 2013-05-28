@@ -4,7 +4,7 @@
 ;; Concepts:
 ;; An event is something non-continuous that "happens".
 ;;
-;; An occurence is a pair [timestamp, event].
+;; An occurence is a pair [event timestamp].
 ;;
 ;; A signal (a.k.a behaviour) is a value that possibly changes
 ;; over time.
@@ -44,15 +44,13 @@
 
 
 ;; TODOs
-;; add filter for signals
-;; introduce timestamp to event specific functions
 ;; implement timer shutdown
 
 
 (defprotocol EventSource
   (subscribe [this event-listener]
     "Subscribes event-listener fn to event source.
-     The event-listener is invoked with the event as argument.")
+     The event-listener is invoked with a pair [event timestamp-in-ms] as argument.")
   (unsubscribe [this event-listener]
     "Removes the event-listener fn from the list of subscribers.")
   (raise-event! [this evt]
@@ -75,7 +73,7 @@
 ;; factories for event sources
 
 (defn make-eventsource
-  "Creates a new events ource."
+  "Creates a new event source."
   []
   (let [a (atom nil)]
     (reify EventSource
@@ -83,11 +81,11 @@
         (add-watch a event-listener (fn [ctx key old new]
                                       (event-listener new)))
         this)
-      (unsubscribe [this key]
-        (remove-watch a key)
+      (unsubscribe [this event-listener]
+        (remove-watch a event-listener)
         this)
       (raise-event! [_ evt]
-        (reset! a evt)))))
+        (reset! a [evt (System/currentTimeMillis)])))))
 
 
 (defn make-timer
@@ -135,7 +133,7 @@
                #(raise-event!
                  newes
                  (if (fn? transform-fn-or-value)
-                   (transform-fn-or-value %)
+                   (transform-fn-or-value (first %))
                    transform-fn-or-value)))
     newes))
 
@@ -145,8 +143,8 @@
    when the predicate returns true for the original event."
   [eventsource pred]
   (let [newes (make-eventsource)]
-    (subscribe eventsource #(when (pred %)
-                              (raise-event! newes %)))
+    (subscribe eventsource #(when (pred (first %))
+                              (raise-event! newes (first %))))
     newes))
 
 
@@ -157,7 +155,7 @@
   [& eventsources]
   (let [newes (make-eventsource)]
     (doseq [es eventsources]
-      (subscribe es #(raise-event! newes %)))
+      (subscribe es #(raise-event! newes (first %))))
     newes))
 
 
@@ -169,7 +167,7 @@
      (switch eventsource nil))
   ([eventsource value]
      (let [newsig (make-signal value)]
-       (subscribe eventsource #(set-value! newsig %))
+       (subscribe eventsource #(set-value! newsig (first %)))
        newsig)))
 
 
@@ -182,14 +180,14 @@
      (switch-with f nil))
   ([eventsource f value]
      (let [newsig (make-signal value)]
-       (subscribe eventsource #(set-value! newsig (f (get-value newsig) %)))
+       (subscribe eventsource #(set-value! newsig (f (get-value newsig) (first %))))
        newsig)))
 
 
 (defn react-with
   "Subscribes f as listener to the event source and
    returns the event source. The function f receives
-   the event as argument, any return value is discarded."
+   the occurence as argument, any return value is discarded."
   [eventsource f]
   (subscribe eventsource f))
 

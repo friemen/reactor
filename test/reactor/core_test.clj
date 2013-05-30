@@ -1,42 +1,44 @@
 (ns reactor.core-test
-  (:use clojure.test
-        reactor.core))
+  (:require [reactor.core :as r])
+  (:use clojure.test))
 
 (deftest bind-test
-  (let [n1 (make-signal 0)
-          n2 (make-signal 0)
-          sum (-> (make-signal 0) (bind + n1 n2))
-          sum>10 (-> sum
-                     (trigger #(when (> % 10) "ALARM!"))
-                     (react-with #(println %)))]
-      (set-value! n1 3)
-      (is (= 3 (get-value sum)))
-      (set-value! n2 9)
-      (is (= 12 (get-value sum)))))
+  (let [n1 (r/signal 0)
+        n2 (r/signal 0)
+        n1half (r/lift / n1 2)
+        sum (r/lift + n1 n2)
+        sum>10 (->> sum
+                    (r/trigger #(when (> % 10) "ALARM!"))
+                    (r/react-with #(println %)))]
+    (r/setv! n1 4)
+    (is (= 4 (r/getv sum)))
+    (is (= 2 (r/getv n1half)))
+    (r/setv! n2 8)
+    (is (= 12 (r/getv sum)))))
 
 
 (deftest trigger-test
-  (let [n (make-signal 0)
-        alarm-events (-> n (trigger #(when (> % 10) "ALARM!")))
-        alarm-signal (-> alarm-events switch)]
-    (set-value! n 9)
-    (is (= nil (get-value alarm-signal)))
-    (set-value! n 11)
-    (is (= "ALARM!" (get-value alarm-signal)))))
+  (let [n (r/signal 0)
+        alarm-events (->> n (r/trigger #(when (> % 10) "ALARM!")))
+        alarm-signal (->> alarm-events r/switch)]
+    (r/setv! n 9)
+    (is (= nil (r/getv alarm-signal)))
+    (r/setv! n 11)
+    (is (= "ALARM!" (r/getv alarm-signal)))))
 
 
 (deftest allow-test
-  (let [e1 (make-eventsource)
-        e2 (-> e1 (allow #(not= "Foo" %)))
-        sig (-> e2 (switch ""))]
+  (let [e1 (r/eventsource)
+        e2 (->> e1 (r/filter #(not= "Foo" %)))
+        sig (->> e2 (r/switch ""))]
     (is (= ""
-           (get-value sig)))
-    (raise-event! e1 "Foo")
+           (r/getv sig)))
+    (r/raise-event! e1 "Foo")
     (is (= ""
-           (get-value sig)))
-    (raise-event! e1 "Bar")
+           (r/getv sig)))
+    (r/raise-event! e1 "Bar")
     (is (= "Bar"
-           (get-value sig)))))
+           (r/getv sig)))))
 
 ;; naive state machine implementation
 
@@ -73,14 +75,14 @@
 
 (deftest switch-with-test
   (let [initial-state {:state :idle, :path []}
-        mouse-events (make-eventsource)
-        drawing-state (-> mouse-events (switch-with draw-statemachine initial-state))]
-    (raise-event! mouse-events (mouse-action :left-press [1 2]))
+        mouse-events (r/eventsource)
+        drawing-state (->> mouse-events (r/reduce draw-statemachine initial-state))]
+    (r/raise-event! mouse-events (mouse-action :left-press [1 2]))
     (is (= {:state :drawing
             :path [[1 2]]}
-           (get-value drawing-state)))
-    (raise-event! mouse-events (mouse-action :move [3 4]))
-    (raise-event! mouse-events (mouse-action :left-release [5 6]))
+           (r/getv drawing-state)))
+    (r/raise-event! mouse-events (mouse-action :move [3 4]))
+    (r/raise-event! mouse-events (mouse-action :left-release [5 6]))
     (is (= {:state :idle
             :path [[1 2] [3 4] [5 6]]}
-           (get-value drawing-state)))))
+           (r/getv drawing-state)))))

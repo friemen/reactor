@@ -48,25 +48,22 @@
 ;; implement executor management / timer shutdown
 
 
+
 (defrecord Occurence [event timestamp])
 
+(defprotocol Reactive
+  (subscribe [this listener-fn]
+    "Subscribes a one-argument listener fn to event source.
+     In case of an event source the listener fn is invoked with an Occurence instance.
+     In case of a signal the listener fn is invoked with the new value of the signal.")
+  (unsubscribe [this listener-fn]
+    "Removes the listener fn from the list of subscribers."))
+
 (defprotocol EventSource
-  (subscribe [this event-listener]
-    "Subscribes event-listener fn to event source.
-     The event-listener is invoked with a pair [event timestamp-in-ms] as argument.")
-  (unsubscribe [this event-listener]
-    "Removes the event-listener fn from the list of subscribers.")
   (raise-event! [this evt]
     "Sends a new event."))
 
-(defprotocol Signal
-  (add-listener [this signal-listener]
-    "Subscribes a signal-listener fn to this signal.
-     The signal-listener is invoked when the signals value changes.
-     The signal-listener function receives the new
-     value of the signal as only argument.")
-  (remove-listener [this signal-listener]
-    "Removes the signal-listener fn from the list of subscribers.")
+(defprotocol Signal  
   (getv [this]
     "Returns the current value of this signal.")
   (setv! [this value]
@@ -75,20 +72,23 @@
 
 ;; factories for event sources
 
+(deftype DefaultEventSource [a]
+  Reactive
+  (subscribe [this event-listener]
+    (add-watch a event-listener (fn [ctx key old new]
+                                  (event-listener new)))
+    this)
+  (unsubscribe [this event-listener]
+    (remove-watch a event-listener)
+    this)
+  EventSource
+  (raise-event! [_ evt]
+    (reset! a (Occurence. evt (System/currentTimeMillis)))))
+
 (defn eventsource
   "Creates a new event source."
   []
-  (let [a (atom nil)]
-    (reify EventSource
-      (subscribe [this event-listener]
-        (add-watch a event-listener (fn [ctx key old new]
-                                      (event-listener new)))
-        this)
-      (unsubscribe [this event-listener]
-        (remove-watch a event-listener)
-        this)
-      (raise-event! [_ evt]
-        (reset! a (Occurence. evt (System/currentTimeMillis)))))))
+  (DefaultEventSource. (atom nil)))
 
 
 (defn timer
@@ -107,23 +107,26 @@
 ;; factories for signals
 
 
+(deftype DefaultSignal [a]
+  Reactive
+  (subscribe [this signal-listener]
+    (add-watch a signal-listener (fn [ctx key old new]
+                                   (when (not= old new)
+                                     (signal-listener new))))
+    this)
+  (unsubscribe [this signal-listener]
+    (remove-watch a signal-listener)
+    this)
+  Signal
+  (getv [_]
+    (deref a))
+  (setv! [_ value]
+    (reset! a value)))
+
 (defn signal
   "Creates new signal with the given initial-value."
   [initial-value]
-  (let [a (atom initial-value)]
-    (reify Signal
-      (add-listener [this signal-listener]
-        (add-watch a signal-listener (fn [ctx key old new]
-                                       (when (not= old new)
-                                         (signal-listener old new))))
-        this)
-      (remove-listener [this signal-listener]
-        (remove-watch a signal-listener)
-        this)
-      (getv [_]
-        (deref a))
-      (setv! [_ value]
-        (reset! a value)))))
+  (DefaultSignal. (atom initial-value)))
 
 
 (defn time
@@ -139,6 +142,22 @@
     newsig))
 
 ;; combinators for event sources
+
+
+(defn as-signal
+  "Returns the given argument, if it is already a signal.
+   If the given argument is an event source, returns a new
+   signal that stores the last event as value. The initial
+   value of the new signal is nil.
+   Otherwise returns a signal that contains the argument as value."
+  [sig-or-val]
+  (cond
+   (instance? reactor.core.Signal sig-or-val) sig-or-val
+   (instance? reactor.core.Reactive sig-or-val) (let [newsig (signal nil)]
+                                                  (subscribe sig-or-val #(setv! newsig (:event %)))
+                                                  newsig)
+   :else (signal sig-or-val)))
+
 
 (defn map
   "Creates a new event source that raises an event
@@ -181,16 +200,21 @@
 
 
 (defn switch
-  "Converts an event source to a signal. The signal will
-   hold the last event. The signals value is initially set
-   to the given value."
-  ([evtsource]
-     (switch nil evtsource))
-  ([value evtsource]
-     (let [newsig (signal value)]
-       (subscribe evtsource #(setv! newsig (:event %)))
-       newsig)))
-
+  "Creates a signal that initially behaves like the given signal sig.
+   Upon any occurence of the given event source the signal switches to
+   behave like the signal that the occurence contained."
+  [sig-or-value evtsource]
+  (let [sig (as-signal sig-or-value)
+        newsig (signal (getv sig))
+        sig-listener #(setv! newsig %)
+        switcher (fn [{timestamp :timestamp evt :event}]
+                   {:pre [(instance? reactor.core.Signal evt)]}
+                   (unsubscribe sig sig-listener)
+                   (subscribe evt sig-listener)
+                   (setv! newsig (getv evt)))]
+    (subscribe sig sig-listener)
+    (subscribe evtsource switcher)
+    newsig))
 
 (defn reduce
   "Converts an event source to a signal. On each event
@@ -225,8 +249,8 @@
    event that will be raised on signal value change."
   [evt-or-fn sig]
   (let [newes (eventsource)]
-    (add-listener sig
-                  (fn [old new]
+    (subscribe sig
+                  (fn [new]
                     (if-let [evt (if (fn? evt-or-fn)
                                    (evt-or-fn new)
                                    evt-or-fn)]
@@ -262,13 +286,6 @@
       (vector values))))
 
 
-(defn as-signal
-  "Returns the given argument, if it is already a signal, otherwise
-   returns a signal that contains the argument as value."
-  [sig-or-val]
-  (if (instance? reactor.core.Signal sig-or-val) sig-or-val (signal sig-or-val)))
-
-
 (defn bind!
   "Connects n input-signals with m output-signals so that on
    each change of an input signal value the values in the output signals
@@ -277,13 +294,13 @@
    non-seq value."
   [f input-sigs output-sigs]
   (let [calc-outputs (lift-helper f input-sigs)
-        listener-fn (fn [old new]
+        listener-fn (fn [new]
                       (some->> (calc-outputs)
                                as-vector
                                (setvs! output-sigs)))]
     (doseq [sig input-sigs]
-      (add-listener sig listener-fn))
-    (listener-fn nil nil))
+      (subscribe sig listener-fn))
+    (listener-fn nil))
   output-sigs)
 
 

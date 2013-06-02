@@ -20,7 +20,7 @@
 (deftest trigger-test
   (let [n (r/signal 0)
         alarm-events (->> n (r/trigger #(when (> % 10) "ALARM!")))
-        alarm-signal (->> alarm-events r/switch)]
+        alarm-signal (->> alarm-events r/as-signal)]
     (r/setv! n 9)
     (is (= nil (r/getv alarm-signal)))
     (r/setv! n 11)
@@ -30,15 +30,27 @@
 (deftest allow-test
   (let [e1 (r/eventsource)
         e2 (->> e1 (r/filter #(not= "Foo" %)))
-        sig (->> e2 (r/switch ""))]
-    (is (= ""
-           (r/getv sig)))
+        sig (->> e2 r/as-signal)]
+    (is (nil? (r/getv sig)))
     (r/raise-event! e1 "Foo")
-    (is (= ""
-           (r/getv sig)))
+    (is (nil? (r/getv sig)))
     (r/raise-event! e1 "Bar")
     (is (= "Bar"
            (r/getv sig)))))
+
+(deftest switch-test
+  (let [e1 (r/eventsource)
+        sig1 (r/signal 0)
+        sig2 (->> e1 (r/switch sig1))
+        sig3 (r/signal 10)]
+    (r/setv! sig1 42)
+    (is (= 42 (r/getv sig2)))
+    (r/raise-event! e1 sig3)
+    (is (= 10 (r/getv sig2)))
+    (r/setv! sig1 4711)
+    (is (= 10 (r/getv sig2)))
+    (r/setv! sig3 13)
+    (is (= 13 (r/getv sig2)))))
 
 ;; naive state machine implementation
 
@@ -73,7 +85,7 @@
 
 ;; test demonstrating how a statemachine can be used in conjunction with event sources
 
-(deftest switch-with-test
+(deftest reduce-test
   (let [initial-state {:state :idle, :path []}
         mouse-events (r/eventsource)
         drawing-state (->> mouse-events (r/reduce draw-statemachine initial-state))]

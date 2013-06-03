@@ -16,6 +16,8 @@ An event is something non-continuous that "happens".
 
 An occurence is a pair [event timestamp].
 
+An event source publishes occurences to subscribers. 
+
 A signal (a.k.a behaviour) is a value that possibly changes over time.
 
 

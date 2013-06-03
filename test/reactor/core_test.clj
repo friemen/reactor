@@ -2,19 +2,19 @@
   (:require [reactor.core :as r])
   (:use clojure.test))
 
-(deftest bind-test
+(deftest lift-test
   (let [n1 (r/signal 0)
         n2 (r/signal 0)
-        n1half (r/lift / n1 2)
-        sum (r/lift + n1 n2)
+        n1half (r/lift / n1 2) ; always contains the half of n1's value 
+        sum (r/lift + n1 n2) ; always contains the sum of n1 and n2
         sum>10 (->> sum
                     (r/trigger #(when (> % 10) "ALARM!"))
                     (r/react-with #(println %)))]
     (r/setv! n1 4)
-    (is (= 4 (r/getv sum)))
-    (is (= 2 (r/getv n1half)))
+    (is (= 4 (r/getv sum))) ; check that sum is up-to-date
+    (is (= 2 (r/getv n1half))) ; check that n1half is up-to-date
     (r/setv! n2 8)
-    (is (= 12 (r/getv sum)))))
+    (is (= 12 (r/getv sum))))) ; check that sum is up-to-date
 
 
 (deftest trigger-test
@@ -22,21 +22,21 @@
         alarm-events (->> n (r/trigger #(when (> % 10) "ALARM!")))
         alarm-signal (->> alarm-events r/as-signal)]
     (r/setv! n 9)
-    (is (= nil (r/getv alarm-signal)))
+    (is (= nil (r/getv alarm-signal))) ; not ALARM must be set
     (r/setv! n 11)
-    (is (= "ALARM!" (r/getv alarm-signal)))))
+    (is (= "ALARM!" (r/getv alarm-signal))))) ; check that ALARM is set
 
 
-(deftest allow-test
+(deftest filter-test
   (let [e1 (r/eventsource)
         e2 (->> e1 (r/filter #(not= "Foo" %)))
         sig (->> e2 r/as-signal)]
     (is (nil? (r/getv sig)))
     (r/raise-event! e1 "Foo")
-    (is (nil? (r/getv sig)))
+    (is (nil? (r/getv sig))) ; ensure that Foo was filtered out
     (r/raise-event! e1 "Bar")
-    (is (= "Bar"
-           (r/getv sig)))))
+    (is (= "Bar" (r/getv sig))))) ; check that Bar passed
+
 
 (deftest switch-test
   (let [e1 (r/eventsource)
@@ -44,13 +44,14 @@
         sig2 (->> e1 (r/switch sig1))
         sig3 (r/signal 10)]
     (r/setv! sig1 42)
-    (is (= 42 (r/getv sig2)))
-    (r/raise-event! e1 sig3)
-    (is (= 10 (r/getv sig2)))
-    (r/setv! sig1 4711)
-    (is (= 10 (r/getv sig2)))
-    (r/setv! sig3 13)
-    (is (= 13 (r/getv sig2)))))
+    (is (= 42 (r/getv sig2))) ; ensure that sig2 follows sig1
+    (r/raise-event! e1 sig3) ; emit sig3 as event
+    (is (= 10 (r/getv sig2))) ; now sig2 show reflect sig3
+    (r/setv! sig1 4711) ; change sig1
+    (is (= 10 (r/getv sig2))) ; sig1 change must not get propagated to sig2
+    (r/setv! sig3 13) ; change sig3
+    (is (= 13 (r/getv sig2))))) ; make sure sig2 follows sig3
+
 
 ;; naive state machine implementation
 

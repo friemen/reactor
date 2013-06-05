@@ -5,50 +5,23 @@
 
 ;; Concepts:
 ;; An event is something non-continuous that "happens".
-;;
+;; 
 ;; An occurence is a pair [event timestamp].
-;;
-;; An event source publishes occurences to subscribers. 
-;;
-;; A signal (a.k.a behaviour) is a value that possibly changes
-;; over time.
-;;
-;; The purpose of the factories and combinators as implemented below
-;; is to enable declarative specifications of event and signal
-;; processing chains (using the ->> macro).
-;;
-;; Example for event processing:
-;;
-;; (def e1 (r/eventsource))
-;; (def e2 (r/eventsource))
-;;
-;; (->> (r/merge e1 e2)
-;;      (r/filter #(not= % "World"))
-;;      (r/react-with #(println "EVENT:" %)))
-;;
-;; (r/raise-event! e1 "Hello")
-;; (r/raise-event! e2 "World")
-;; => prints "Hello"
-;;
-;; Example for signal processing:
-;;
-;; (def n1 (r/signal 0))
-;; (def n2 (r/signal 0))
-;;
-;; (def sum (->> (r/lift + n1 n2)))
-;; (r/setvs! [n1 n2] [3 7])
-;; => sum == 10, and sum is updated whenever n1 or n2 changes.
-;;
-;; (def sum>10 (->> sum
-;;                 (r/trigger #(when (> % 10) "ALARM!"))
-;;                 (r/react-with #(println %))))
-;; => sum>10 is an event source. whenever sum's value > 10
-;;    an occurence with "ALARM!" is printed.
-;;
+;; 
+;; An event source publishes occurences to subscribers.
+;; 
+;; A signal (a.k.a behaviour) is a value that possibly changes over time.
+;; 
+;; A reactive is an abstraction over event source and signal.
+;; 
+;; A follower is a function or reactive that is affected by events or value changes.
 
 
 ;; TODOs
 ;; remove code duplication in deftype
+;; rename dependees to followers
+;; check whether react-with can be replaced by subscribe
+;; check whether process-with can be replaced by subscribe
 ;; implement executor management / timer shutdown
 
 
@@ -233,7 +206,7 @@
     newsig))
 
 (defn reduce
-  "Converts an event source to a signal. On each event
+  "Creates a signal from an event source. On each event
    the given function is invoked with the current signals
    value as first and the event as second parameter.
    The result of the function is set as new value of the signal."

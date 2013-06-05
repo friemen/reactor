@@ -1,5 +1,6 @@
 (ns reactor.core
   (:refer-clojure :exclude [filter merge map reduce time])
+  (:require [reactor.propagation :as p])
   (:import [java.util.concurrent ScheduledThreadPoolExecutor TimeUnit]))
 
 ;; Concepts:
@@ -47,6 +48,7 @@
 
 
 ;; TODOs
+;; remove code duplication in deftype
 ;; implement executor management / timer shutdown
 
 
@@ -54,12 +56,14 @@
 (defrecord Occurence [event timestamp])
 
 (defprotocol Reactive
-  (subscribe [this listener-fn]
-    "Subscribes a one-argument listener fn to event source.
+  (subscribe [this f dependees]
+    "Subscribes a one-argument listener function that influences the dependees.
      In case of an event source the listener fn is invoked with an Occurence instance.
      In case of a signal the listener fn is invoked with the new value of the signal.")
-  (unsubscribe [this listener-fn]
-    "Removes the listener fn from the list of subscribers."))
+  (unsubscribe [this f]
+    "Removes the listener fn from the list of subscribers.")
+  (dependees [this]
+    "Returns reactives that follow this reactive."))
 
 (defprotocol EventSource
   (raise-event! [this evt]
@@ -74,23 +78,25 @@
 
 ;; factories for event sources
 
-(deftype DefaultEventSource [a]
+(deftype DefaultEventSource [ps]
   Reactive
-  (subscribe [this event-listener]
-    (add-watch a event-listener (fn [ctx key old new]
-                                  (event-listener new)))
+  (subscribe [this f dependees]
+    (p/add! ps (p/propagator f dependees))
     this)
-  (unsubscribe [this event-listener]
-    (remove-watch a event-listener)
+  (unsubscribe [this f]
+    (doseq [p (->> ps p/propagators (clojure.core/filter #(= (:fn %) f)))]
+      (p/remove! ps p))
     this)
+  (dependees [this]
+    (mapcat :targets (p/propagators ps)))
   EventSource
   (raise-event! [_ evt]
-    (reset! a (Occurence. evt (System/currentTimeMillis)))))
+    (p/propagate-all! ps (Occurence. evt (System/currentTimeMillis)))))
 
 (defn eventsource
   "Creates a new event source."
   []
-  (DefaultEventSource. (atom nil)))
+  (DefaultEventSource. (p/propagator-set)))
 
 
 (defn timer
@@ -109,16 +115,17 @@
 ;; factories for signals
 
 
-(deftype DefaultSignal [a]
+(deftype DefaultSignal [a ps]
   Reactive
-  (subscribe [this signal-listener]
-    (add-watch a signal-listener (fn [ctx key old new]
-                                   (when (not= old new)
-                                     (signal-listener new))))
+  (subscribe [this f dependees]
+    (p/add! ps (p/propagator f dependees))
     this)
-  (unsubscribe [this signal-listener]
-    (remove-watch a signal-listener)
+  (unsubscribe [this f]
+    (doseq [p (->> ps p/propagators (clojure.core/filter #(= (:fn %) f)))]
+      (p/remove! ps p))
     this)
+  (dependees [this]
+    (mapcat :targets (p/propagators ps)))
   Signal
   (getv [_]
     (deref a))
@@ -128,7 +135,12 @@
 (defn signal
   "Creates new signal with the given initial-value."
   [initial-value]
-  (DefaultSignal. (atom initial-value)))
+  (let [a (atom initial-value)
+        ps (p/propagator-set)]
+    (add-watch a :signal (fn [ctx key old new]
+                           (if (not= old new)
+                             (p/propagate-all! ps new))))
+    (DefaultSignal. a ps)))
 
 
 (defn time
@@ -156,7 +168,7 @@
   (cond
    (instance? reactor.core.Signal sig-or-val) sig-or-val
    (instance? reactor.core.Reactive sig-or-val) (let [newsig (signal nil)]
-                                                  (subscribe sig-or-val #(setv! newsig (:event %)))
+                                                  (subscribe sig-or-val #(setv! newsig (:event %)) [newsig])
                                                   newsig)
    :else (signal sig-or-val)))
 
@@ -176,7 +188,8 @@
                  newes
                  (if (fn? transform-fn-or-value)
                    (transform-fn-or-value (:event %))
-                   transform-fn-or-value)))
+                   transform-fn-or-value))
+               [newes])
     newes))
 
 
@@ -186,7 +199,8 @@
   [pred evtsource]
   (let [newes (eventsource)]
     (subscribe evtsource #(when (pred (:event %))
-                              (raise-event! newes (:event %))))
+                              (raise-event! newes (:event %)))
+               [newes])
     newes))
 
 
@@ -197,7 +211,7 @@
   [& evtsources]
   (let [newes (eventsource)]
     (doseq [es evtsources]
-      (subscribe es #(raise-event! newes (:event %))))
+      (subscribe es #(raise-event! newes (:event %)) [newes]))
     newes))
 
 
@@ -209,13 +223,13 @@
   (let [sig (as-signal sig-or-value)
         newsig (signal (getv sig))
         sig-listener #(setv! newsig %)
-        switcher (fn [{timestamp :timestamp evt :event}]
-                   {:pre [(instance? reactor.core.Signal evt)]}
+        switcher (fn [{timestamp :timestamp evtsig :event}]
+                   {:pre [(instance? reactor.core.Signal evtsig)]}
                    (unsubscribe sig sig-listener)
-                   (subscribe evt sig-listener)
-                   (setv! newsig (getv evt)))]
-    (subscribe sig sig-listener)
-    (subscribe evtsource switcher)
+                   (subscribe evtsig sig-listener [newsig])
+                   (setv! newsig (getv evtsig)))]
+    (subscribe sig sig-listener [newsig])
+    (subscribe evtsource switcher [newsig])
     newsig))
 
 (defn reduce
@@ -227,7 +241,7 @@
      (reduce f nil))
   ([f value evtsource]
      (let [newsig (signal value)]
-       (subscribe evtsource #(setv! newsig (f (getv newsig) (:event %))))
+       (subscribe evtsource #(setv! newsig (f (getv newsig) (:event %))) [newsig])
        newsig)))
 
 
@@ -236,7 +250,7 @@
    returns the event source. The function f receives
    the occurence as argument, any return value is discarded."
   [f evtsource]
-  (subscribe evtsource f))
+  (subscribe evtsource f []))
 
 
 ;; combinators for signals
@@ -252,11 +266,12 @@
   [evt-or-fn sig]
   (let [newes (eventsource)]
     (subscribe sig
-                  (fn [new]
-                    (if-let [evt (if (fn? evt-or-fn)
-                                   (evt-or-fn new)
-                                   evt-or-fn)]
-                      (raise-event! newes evt))))
+               (fn [new]
+                 (if-let [evt (if (fn? evt-or-fn)
+                                (evt-or-fn new)
+                                evt-or-fn)]
+                   (raise-event! newes evt)))
+               [newes])
     newes))
 
 
@@ -301,7 +316,7 @@
                                as-vector
                                (setvs! output-sigs)))]
     (doseq [sig input-sigs]
-      (subscribe sig listener-fn))
+      (subscribe sig listener-fn output-sigs))
     (listener-fn nil))
   output-sigs)
 

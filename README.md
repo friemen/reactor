@@ -1,7 +1,7 @@
 reactor
 =======
 
-Exploring functional reactive programming with Clojure.
+Exploring functional reactive programming (FRP) with Clojure.
 
 The purpose of the factories and combinators as implemented here 
 is to enable declarative specifications of event and signal
@@ -56,9 +56,14 @@ Example for signal processing:
 Current state
 -------------
 This library is currently purely experimental stuff.
+The first goal is to produce an API that supports the FRP programming model.
+Second step is to provide some more elaborate samples that demonstrate how non-trivial
+applications like GUI, message processing, animation or games would be described with FRP.
 
-The implementation of EventSource and Signal is now based on Clojure atoms, 
-which is only one way. It seems -- for some use cases --
-entirely reasonable to base the implementation on refs, queues and/or agents. 
+The current implementation is very simple.
+It uses atoms for signal values.
+Event and signal processing is single-threaded.
+It does not avoid inconsistencies (a.k.a glitches).
+
 
 

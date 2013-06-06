@@ -20,7 +20,7 @@ An *event source* publishes occurences to subscribers.
 
 A *signal* (a.k.a *behaviour*) is a value that possibly changes over time.
 
-A *reactive* is an abstraction over event source and signal. 
+A *reactive* is an abstraction of event source and signal. 
 
 A *follower* is a function or reactive that is affected by events or value changes.
 
@@ -60,6 +60,14 @@ API
 ---
 See also [core.clj](src/reactor/core.clj).
 
+### Factories
+
+**signal** -- Creates a new signal with the given initial value.
+
+**eventsource** -- Creates a new event source.
+
+**time** -- Create a signal that holds the current time in milliseconds.
+
 ### Functions applying to Event Sources
 
 **raise-event!** -- Creates a new occurence. The event will be propagated to all followers.
@@ -77,8 +85,6 @@ See also [core.clj](src/reactor/core.clj).
 **reduce** -- Creates a signal from an event source that changes its value by applying a function to the current value of the signal and an event. 
 
 **react-with** -- Subscribes a listener function to an event source.
-
-**unsubscribe** -- Unsubscribes a listener function from an event source.
 
 
 ### Functions applying to Signals
@@ -110,6 +116,7 @@ areas, the implementation "under the hood" would be improved.
 The current implementation is very simple, it is just enough to make the API working.
 It uses atoms for signal values.
 Event and signal processing is single-threaded.
+It follows a push-based approach.
 It does not avoid inconsistencies (a.k.a glitches).
 
 References

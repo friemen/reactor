@@ -17,30 +17,34 @@
 ;; A follower is a function or reactive that is affected by events or value changes.
 
 
-;; TODOs
-;; remove code duplication in deftype
-;; rename dependees to followers
-;; check whether react-with can be replaced by subscribe
-;; check whether process-with can be replaced by subscribe
-;; implement executor management / timer shutdown
 
-
+;; types and default implementations
 
 (defrecord Occurence [event timestamp])
 
 (defprotocol Reactive
-  (subscribe [this f dependees]
-    "Subscribes a one-argument listener function that influences the dependees.
+  (subscribe [r f followers]
+    "Subscribes a one-argument listener function that influences the followers.
      In case of an event source the listener fn is invoked with an Occurence instance.
      In case of a signal the listener fn is invoked with the new value of the signal.")
-  (unsubscribe [this f]
-    "Removes the listener fn from the list of subscribers.")
-  (dependees [this]
+  (unsubscribe [r f]
+    "Removes the listener fn from the list of followers.")
+  (followers [r]
     "Returns reactives that follow this reactive."))
 
-(defprotocol EventSource
-  (raise-event! [this evt]
-    "Sends a new event."))
+
+(def ^:private reactive-fns
+  {:subscribe (fn [r f followers]
+                (p/add! (.ps r) (p/propagator f followers))
+                r)
+   :unsubscribe (fn [r f]
+                  (doseq [p (->> (.ps r) p/propagators (clojure.core/filter #(= (:fn %) f)))]
+                    (p/remove! (.ps r) p))
+                  r)
+   :followers (fn [r]
+                (mapcat :targets (p/propagators (.ps r))))})
+
+
 
 (defprotocol Signal  
   (getv [this]
@@ -48,65 +52,43 @@
   (setv! [this value]
     "Sets the value of this signal."))
 
-
-;; factories for event sources
-
-(deftype DefaultEventSource [ps]
-  Reactive
-  (subscribe [this f dependees]
-    (p/add! ps (p/propagator f dependees))
-    this)
-  (unsubscribe [this f]
-    (doseq [p (->> ps p/propagators (clojure.core/filter #(= (:fn %) f)))]
-      (p/remove! ps p))
-    this)
-  (dependees [this]
-    (mapcat :targets (p/propagators ps)))
-  EventSource
-  (raise-event! [_ evt]
-    (p/propagate-all! ps (Occurence. evt (System/currentTimeMillis)))))
-
-(defn eventsource
-  "Creates a new event source."
-  []
-  (DefaultEventSource. (p/propagator-set)))
-
-
-(defn timer
-  "Creates timer event source that creates occurence every resolution ms."
-  [resolution evt]
-  (let [newes (eventsource)
-        executor (ScheduledThreadPoolExecutor. 1)]
-    (.scheduleAtFixedRate executor
-                          #(raise-event! newes evt)
-                          0
-                          resolution
-                          TimeUnit/SECONDS)
-    newes))
-
-
-;; factories for signals
-
-
 (deftype DefaultSignal [a ps]
-  Reactive
-  (subscribe [this f dependees]
-    (p/add! ps (p/propagator f dependees))
-    this)
-  (unsubscribe [this f]
-    (doseq [p (->> ps p/propagators (clojure.core/filter #(= (:fn %) f)))]
-      (p/remove! ps p))
-    this)
-  (dependees [this]
-    (mapcat :targets (p/propagators ps)))
   Signal
   (getv [_]
     (deref a))
   (setv! [_ value]
     (reset! a value)))
 
+(extend DefaultSignal Reactive reactive-fns)
+
+
+(deftype Time [a executor ps]
+  Signal
+  (getv [_]
+    (deref a))
+  (setv! [_ value]
+    (throw (UnsupportedOperationException. "A time signal cannot be set"))))
+
+(extend Time Reactive reactive-fns)
+
+
+(defprotocol EventSource
+  (raise-event! [this evt]
+    "Sends a new event."))
+
+(deftype DefaultEventSource [ps]
+  EventSource
+  (raise-event! [_ evt]
+    (p/propagate-all! ps (Occurence. evt (System/currentTimeMillis)))))
+
+(extend DefaultEventSource Reactive reactive-fns)
+
+
+
+;; factories for signals and event sources
+
 (defn signal
-  "Creates new signal with the given initial-value."
+  "Creates new signal with the given initial value."
   [initial-value]
   (let [a (atom initial-value)
         ps (p/propagator-set)]
@@ -116,17 +98,51 @@
     (DefaultSignal. a ps)))
 
 
+(defonce ^:private timer-signals (atom #{}))
+
 (defn time
   "Creates time signal that updates its value every resolution ms."
   [resolution]
-  (let [newsig (signal)
-        executor (ScheduledThreadPoolExecutor. 1)]
+  (let [a (atom (System/currentTimeMillis))
+        executor (ScheduledThreadPoolExecutor. 1)
+        ps (p/propagator-set)
+        newsig (Time. a executor ps)]
+    (add-watch a :signal (fn [ctx key old new]
+                           (if (not= old new)
+                             (p/propagate-all! ps new))))
     (.scheduleAtFixedRate executor
-                          #(setv! newsig (System/currentTimeMillis))
+                          #(reset! a (System/currentTimeMillis))
                           0
                           resolution
-                          TimeUnit/SECONDS)
+                          TimeUnit/MILLISECONDS)
+    (swap! timer-signals #(conj % newsig))
     newsig))
+
+(defn stop-timer
+  "Stops the time signal from being updated."
+  [tsig]
+  (-> tsig .executor .shutdown)
+  (swap! timer-signals #(disj % tsig)))
+
+(defn stop-all-timers
+  "Stops all time signals at once."
+  []
+  (doseq [t @timer-signals]
+    (-> t .executor .shutdown))
+  (reset! timer-signals #{}))
+
+(defonce ^:private stopper (Thread. stop-all-timers))
+
+(doto (java.lang.Runtime/getRuntime)
+  (.removeShutdownHook stopper)
+  (.addShutdownHook stopper))
+
+
+
+(defn eventsource
+  "Creates a new event source."
+  []
+  (DefaultEventSource. (p/propagator-set)))
 
 ;; combinators for event sources
 
@@ -139,10 +155,10 @@
    Otherwise returns a signal that contains the argument as value."
   [sig-or-val]
   (cond
-   (instance? reactor.core.Signal sig-or-val) sig-or-val
-   (instance? reactor.core.Reactive sig-or-val) (let [newsig (signal nil)]
-                                                  (subscribe sig-or-val #(setv! newsig (:event %)) [newsig])
-                                                  newsig)
+   (satisfies? Signal sig-or-val) sig-or-val
+   (satisfies? Reactive sig-or-val) (let [newsig (signal nil)]
+                                      (subscribe sig-or-val #(setv! newsig (:event %)) [newsig])
+                                      newsig)
    :else (signal sig-or-val)))
 
 
@@ -236,7 +252,9 @@
    new value. An event is raised when the function return a non-nil
    result. If evt-or-fn is not a function it is assumed to be the
    event that will be raised on signal value change."
-  [evt-or-fn sig]
+  ([sig]
+     (trigger identity sig))
+  ([evt-or-fn sig]
   (let [newes (eventsource)]
     (subscribe sig
                (fn [new]
@@ -245,7 +263,7 @@
                                 evt-or-fn)]
                    (raise-event! newes evt)))
                [newes])
-    newes))
+    newes)))
 
 
 (defn setvs!
@@ -262,7 +280,6 @@
   (fn []
     (let [input-values (clojure.core/map getv sigs)
           output-values (apply f input-values)]
-      (println input-values "-->" output-values)
       output-values)))
 
 
@@ -307,6 +324,6 @@
   "Connects a n-ary function to n input signals so that the function is
    executed whenever one of the signals changes its value. The output of the
    function execution is discarded."
-  [f input-sigs]
-  (bind! f input-sigs nil))
+  [f & input-sigs]
+  (bind! f (vec input-sigs) nil))
 

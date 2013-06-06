@@ -1,7 +1,7 @@
 (ns reactor.core
   (:refer-clojure :exclude [filter merge map reduce time])
-  (:require [reactor.propagation :as p])
-  (:import [java.util.concurrent ScheduledThreadPoolExecutor TimeUnit]))
+  (:require [reactor.propagation :as p]
+            [reactor.execution :as x]))
 
 ;; Concepts:
 ;; An event is something non-continuous that "happens".
@@ -30,7 +30,9 @@
   (unsubscribe [r f]
     "Removes the listener fn from the list of followers.")
   (followers [r]
-    "Returns reactives that follow this reactive."))
+    "Returns reactives that follow this reactive.")
+  (role [r]
+    "Returns a keyword denoting the functional role of the reactive."))
 
 
 (def ^:private reactive-fns
@@ -42,7 +44,8 @@
                     (p/remove! (.ps r) p))
                   r)
    :followers (fn [r]
-                (mapcat :targets (p/propagators (.ps r))))})
+                (mapcat :targets (p/propagators (.ps r))))
+   :role (fn [r] (.role r))})
 
 
 
@@ -52,17 +55,17 @@
   (setv! [this value]
     "Sets the value of this signal."))
 
-(deftype DefaultSignal [a ps]
+(deftype DefaultSignal [role a ps executor]
   Signal
   (getv [_]
     (deref a))
   (setv! [_ value]
-    (reset! a value)))
+    (x/schedule executor #(reset! a value))))
 
 (extend DefaultSignal Reactive reactive-fns)
 
 
-(deftype Time [a executor ps]
+(deftype Time [role a executor ps]
   Signal
   (getv [_]
     (deref a))
@@ -76,10 +79,10 @@
   (raise-event! [this evt]
     "Sends a new event."))
 
-(deftype DefaultEventSource [ps]
+(deftype DefaultEventSource [role ps executor]
   EventSource
   (raise-event! [_ evt]
-    (p/propagate-all! ps (Occurence. evt (System/currentTimeMillis)))))
+    (x/schedule executor #(p/propagate-all! ps (Occurence. evt (System/currentTimeMillis))))))
 
 (extend DefaultEventSource Reactive reactive-fns)
 
@@ -89,13 +92,17 @@
 
 (defn signal
   "Creates new signal with the given initial value."
-  [initial-value]
-  (let [a (atom initial-value)
-        ps (p/propagator-set)]
-    (add-watch a :signal (fn [ctx key old new]
-                           (if (not= old new)
-                             (p/propagate-all! ps new))))
-    (DefaultSignal. a ps)))
+  ([initial-value]
+     (signal :signal x/current-thread initial-value))
+  ([role initial-value]
+     (signal role x/current-thread initial-value))
+  ([role executor initial-value]
+     (let [a (atom initial-value)
+           ps (p/propagator-set)]
+       (add-watch a :signal (fn [ctx key old new]
+                              (if (not= old new)
+                                (p/propagate-all! ps new))))
+       (DefaultSignal. role a ps executor))))
 
 
 (defonce ^:private timer-signals (atom #{}))
@@ -104,48 +111,44 @@
   "Creates time signal that updates its value every resolution ms."
   [resolution]
   (let [a (atom (System/currentTimeMillis))
-        executor (ScheduledThreadPoolExecutor. 1)
+        executor (x/timer-executor resolution)
         ps (p/propagator-set)
-        newsig (Time. a executor ps)]
+        newsig (Time. :time a executor ps)]
     (add-watch a :signal (fn [ctx key old new]
                            (if (not= old new)
                              (p/propagate-all! ps new))))
-    (.scheduleAtFixedRate executor
-                          #(reset! a (System/currentTimeMillis))
-                          0
-                          resolution
-                          TimeUnit/MILLISECONDS)
+    (x/schedule executor #(reset! a (System/currentTimeMillis)))
     (swap! timer-signals #(conj % newsig))
     newsig))
-
-(defn stop-timer
-  "Stops the time signal from being updated."
-  [tsig]
-  (-> tsig .executor .shutdown)
-  (swap! timer-signals #(disj % tsig)))
-
-(defn stop-all-timers
-  "Stops all time signals at once."
-  []
-  (doseq [t @timer-signals]
-    (-> t .executor .shutdown))
-  (reset! timer-signals #{}))
-
-(defonce ^:private stopper (Thread. stop-all-timers))
-
-(doto (java.lang.Runtime/getRuntime)
-  (.removeShutdownHook stopper)
-  (.addShutdownHook stopper))
-
 
 
 (defn eventsource
   "Creates a new event source."
-  []
-  (DefaultEventSource. (p/propagator-set)))
+  ([]
+     (eventsource :eventsource x/current-thread))
+  ([role]
+     (eventsource role x/current-thread))
+  ([role executor]
+     (DefaultEventSource. role (p/propagator-set) executor)))
+
+;; common functions for reactives (signals and event sources)
+
+(defn pass
+  "Creates a reactive of the same type as the given reactive.
+   Uses the specified executor to handle the event or value propagation in a different thread."
+  [executor reactive]
+  (cond
+   (satisfies? Signal reactive)
+   (let [newsig (signal :signalpass executor nil)]
+     (subscribe reactive #(setv! newsig %) [newsig])
+     newsig)
+   (satisfies? EventSource reactive)
+   (let [newes (eventsource :eventpass executor)]
+     (subscribe reactive #(raise-event! newes (:event %)) [newes])
+     newes)))
+
 
 ;; combinators for event sources
-
 
 (defn as-signal
   "Returns the given argument, if it is already a signal.
@@ -155,10 +158,12 @@
    Otherwise returns a signal that contains the argument as value."
   [sig-or-val]
   (cond
-   (satisfies? Signal sig-or-val) sig-or-val
-   (satisfies? Reactive sig-or-val) (let [newsig (signal nil)]
-                                      (subscribe sig-or-val #(setv! newsig (:event %)) [newsig])
-                                      newsig)
+   (satisfies? Signal sig-or-val)
+   sig-or-val
+   (satisfies? EventSource sig-or-val)
+   (let [newsig (signal :eventsink nil)]
+     (subscribe sig-or-val #(setv! newsig (:event %)) [newsig])
+     newsig)
    :else (signal sig-or-val)))
 
 
@@ -171,7 +176,7 @@
    it is invoked with the original event as argument. Otherwise
    the second argument is raised as the new event."
   [transform-fn-or-value evtsource]
-  (let [newes (eventsource)]
+  (let [newes (eventsource :map)]
     (subscribe evtsource
                #(raise-event!
                  newes
@@ -186,7 +191,7 @@
   "Creates a new event source that only raises an event
    when the predicate returns true for the original event."
   [pred evtsource]
-  (let [newes (eventsource)]
+  (let [newes (eventsource :filter)]
     (subscribe evtsource #(when (pred (:event %))
                               (raise-event! newes (:event %)))
                [newes])
@@ -198,7 +203,7 @@
    new event source raises an event whenever one of the
    specified sources raises an event."
   [& evtsources]
-  (let [newes (eventsource)]
+  (let [newes (eventsource :merge)]
     (doseq [es evtsources]
       (subscribe es #(raise-event! newes (:event %)) [newes]))
     newes))
@@ -210,7 +215,7 @@
    behave like the signal that the occurence contained."
   [sig-or-value evtsource]
   (let [sig (as-signal sig-or-value)
-        newsig (signal (getv sig))
+        newsig (signal :switch (getv sig))
         sig-listener #(setv! newsig %)
         switcher (fn [{timestamp :timestamp evtsig :event}]
                    {:pre [(instance? reactor.core.Signal evtsig)]}
@@ -229,7 +234,7 @@
   ([f evtsource]
      (reduce f nil))
   ([f value evtsource]
-     (let [newsig (signal value)]
+     (let [newsig (signal :reduce value)]
        (subscribe evtsource #(setv! newsig (f (getv newsig) (:event %))) [newsig])
        newsig)))
 
@@ -255,7 +260,7 @@
   ([sig]
      (trigger identity sig))
   ([evt-or-fn sig]
-  (let [newes (eventsource)]
+  (let [newes (eventsource :trigger)]
     (subscribe sig
                (fn [new]
                  (if-let [evt (if (fn? evt-or-fn)
@@ -301,13 +306,13 @@
    non-seq value."
   [f input-sigs output-sigs]
   (let [calc-outputs (lift-helper f input-sigs)
-        listener-fn (fn [new]
+        listener-fn (fn [_]
                       (some->> (calc-outputs)
                                as-vector
                                (setvs! output-sigs)))]
     (doseq [sig input-sigs]
       (subscribe sig listener-fn output-sigs))
-    (listener-fn nil))
+    (listener-fn nil)) ; initial value sync
   output-sigs)
 
 
@@ -315,7 +320,7 @@
   "Creates a signal that is updated by applying the n-ary function
    f to the values of the input signals whenever one value changes."
   [f & sigs]
-  (let [newsig (signal 0)]
+  (let [newsig (signal :lift 0)]
     (bind! f (vec (clojure.core/map as-signal sigs)) [newsig])
     newsig))
 
@@ -326,4 +331,20 @@
    function execution is discarded."
   [f & input-sigs]
   (bind! f (vec input-sigs) nil))
+
+
+(defn stop-timer
+  "Stops the time signal from being updated."
+  [tsig]
+  (-> tsig .executor x/shutdown)
+  (swap! timer-signals #(disj % tsig)))
+
+
+(defn stop-all-timers
+  "Stops all time signals at once."
+  []
+  (doseq [t @timer-signals]
+    (-> t .executor x/shutdown))
+  (reset! timer-signals #{}))
+
 

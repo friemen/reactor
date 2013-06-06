@@ -53,6 +53,23 @@
     (is (= 13 (r/getv sig2))))) ; make sure sig2 follows sig3
 
 
+(deftest pass-test
+  (let [exec1used (atom false)
+        exec1 (reify reactor.execution.Executor
+               (schedule [_ f] (reset! exec1used true) (f)))
+        e1 (r/eventsource)
+        sig1 (->> e1 (r/pass exec1) r/as-signal)
+        exec2used (atom false)
+        exec2 (reify reactor.execution.Executor
+               (schedule [_ f] (reset! exec2used true) (f)))
+        sig2 (->> sig1 (r/pass exec2))]
+    (r/raise-event! e1 "Foo")
+    (is @exec1used) ; check that executor 1 was actually used
+    (is (= "Foo" (r/getv sig1)))
+    (is @exec2used) ; check that executor 2 was actually used
+    (is (= "Foo" (r/getv sig2)))))
+
+
 ;; naive state machine implementation
 
 (defn- illegalstate

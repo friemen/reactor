@@ -68,6 +68,12 @@ See also [core.clj](src/reactor/core.clj).
 
 **time** -- Create a signal that holds the current time in milliseconds.
 
+
+### Functions applying to Signals as well as Event Sources
+
+**pass** -- Creates a reactive that handles propagation/processing in a different thread. 
+
+
 ### Functions applying to Event Sources
 
 **raise-event!** -- Creates a new occurence. The event will be propagated to all followers.
@@ -101,7 +107,9 @@ See also [core.clj](src/reactor/core.clj).
 
 **bind!** -- Connects input with output signals. On every value change a function is applied to current input values. The resulting values are set as value to the output signals.
 
-**process-with** -- Subscribes a listener to the signal.
+**process-with** -- Subscribes a listener function to a signal that is invoked upon value changes.
+
+**stop-timer** -- Stop the timer executor associated with a time signal.
 
        
 Current state
@@ -113,11 +121,12 @@ applications like GUI, message processing, animation or games would be described
 If those samples provide evidence that FRP really simplifies the program code in certain 
 areas, the implementation "under the hood" would be improved.
 
-The current implementation is very simple, it is just enough to make the API working.
-It uses atoms for signal values.
-Event and signal processing is single-threaded.
-It follows a push-based approach.
-It does not avoid inconsistencies (a.k.a glitches).
+The current implementation is simple, it is just enough to make the API working.
+It uses atoms for signal values. The dependencies among reactives form an explicit graph.
+Updates are made via a push-based approach, but there is no avoidance of inconsistencies 
+(a.k.a glitches).
+Event and signal processing can be passed across threads and therefore allows for chains
+with asynchronity.
 
 References
 ----------

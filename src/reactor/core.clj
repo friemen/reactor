@@ -306,10 +306,11 @@
    non-seq value."
   [f input-sigs output-sigs]
   (let [calc-outputs (lift-helper f input-sigs)
-        listener-fn (fn [_]
-                      (some->> (calc-outputs)
-                               as-vector
-                               (setvs! output-sigs)))]
+        listener-fn (if (= 1 (count output-sigs))
+                      (fn [_] (setv! (first output-sigs) (calc-outputs)))
+                      (fn [_] (some->> (calc-outputs)
+                                       as-vector
+                                       (setvs! output-sigs))))]
     (doseq [sig input-sigs]
       (subscribe sig listener-fn output-sigs))
     (listener-fn nil)) ; initial value sync
@@ -328,9 +329,10 @@
 (defn process-with
   "Connects a n-ary function to n input signals so that the function is
    executed whenever one of the signals changes its value. The output of the
-   function execution is discarded."
+   function execution is discarded. Instead returns the input signals."
   [f & input-sigs]
-  (bind! f (vec input-sigs) nil))
+  (bind! f (vec input-sigs) nil)
+  (if (= 1 (count input-sigs)) (first input-sigs) (vec input-sigs)))
 
 
 (defn stop-timer

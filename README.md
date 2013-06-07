@@ -56,6 +56,11 @@ Example for signal processing:
     => sum>10 is an event source. whenever sum's value > 10
        the string "[ALARM! 1369...]" is printed.
 
+Further examples:
+
+[Swing animation example](src/reactor/swing_sample.clj).
+
+
 API
 ---
 See also [core.clj](src/reactor/core.clj).
@@ -66,7 +71,7 @@ See also [core.clj](src/reactor/core.clj).
 
 **eventsource** -- Creates a new event source.
 
-**time** -- Create a signal that holds the current time in milliseconds.
+**time** -- Creates a signal that holds the current time in milliseconds.
 
 
 ### Functions applying to Signals as well as Event Sources

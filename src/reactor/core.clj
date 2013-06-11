@@ -1,4 +1,5 @@
 (ns reactor.core
+  "Factories and combinators for FRP style signals and event sources."
   (:refer-clojure :exclude [delay filter merge map reduce time])
   (:require [reactor.propagation :as p]
             [reactor.execution :as x]))
@@ -31,15 +32,15 @@
 (defrecord Occurence [event timestamp])
 
 (defprotocol Reactive
-  (subscribe [r f followers]
+  (subscribe [react f followers]
     "Subscribes a one-argument listener function that influences the followers.
      In case of an event source the listener fn is invoked with an Occurence instance.
      In case of a signal the listener fn is invoked with the new value of the signal.")
-  (unsubscribe [r f]
+  (unsubscribe [react f]
     "Removes the listener fn from the list of followers.")
-  (followers [r]
+  (followers [react]
     "Returns reactives that follow this reactive.")
-  (role [r]
+  (role [react]
     "Returns a keyword denoting the functional role of the reactive."))
 
 
@@ -58,9 +59,9 @@
 
 
 (defprotocol Signal  
-  (getv [this]
+  (getv [sig]
     "Returns the current value of this signal.")
-  (setv! [this value]
+  (setv! [sig value]
     "Sets the value of this signal."))
 
 (defrecord DefaultSignal [role a ps executor]
@@ -144,15 +145,15 @@
 (defn pass
   "Creates a reactive of the same type as the given reactive.
    Uses the specified executor to handle the event or value propagation in a different thread."
-  [executor reactive]
+  [executor react]
   (cond
-   (satisfies? Signal reactive)
+   (satisfies? Signal react)
    (let [newsig (signal :signalpass executor nil)]
-     (subscribe reactive #(setv! newsig %) [newsig])
+     (subscribe react #(setv! newsig %) [newsig])
      newsig)
-   (satisfies? EventSource reactive)
+   (satisfies? EventSource react)
    (let [newes (eventsource :eventpass executor)]
-     (subscribe reactive #(raise-event! newes (:event %)) [newes])
+     (subscribe react #(raise-event! newes (:event %)) [newes])
      newes)))
 
 
@@ -295,20 +296,20 @@
 
 (defn changes
   "Creates an event source from a signal so that an event is raised
-   whenever the signal value changes. If the evt-or-fn argument
+   whenever the signal value changes. If the fn-or-val argument
    evaluates to a function, then it is applied to the signals
    new value. An event is raised when the function return a non-nil
-   result. If evt-or-fn is not a function it is assumed to be the
+   result. If fn-or-val is not a function it is assumed to be the
    event that will be raised on signal value change."
   ([sig]
      (changes identity sig))
-  ([evt-or-fn sig]
+  ([fn-or-val sig]
   (let [newes (eventsource :changes)]
     (subscribe sig
                (fn [new]
-                 (if-let [evt (if (fn? evt-or-fn)
-                                (evt-or-fn new)
-                                evt-or-fn)]
+                 (if-let [evt (if (fn? fn-or-val)
+                                (fn-or-val new)
+                                fn-or-val)]
                    (raise-event! newes evt)))
                [newes])
     newes)))
@@ -331,7 +332,7 @@
       output-values)))
 
 
-(defn as-vector
+(defn- as-vector
   "Returns a value vector from a collection of values or a single value."
   [values]
   (if (vector? values)

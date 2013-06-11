@@ -1,4 +1,5 @@
-(ns reactor.propagation)
+(ns reactor.propagation
+  "Support for propagation of arbitrary values through a graph of propagators.")
 
 ;; Supports the implementation of Event Sources and Signals.
 ;; A Propagator is a one argument function together with a set of targets,
@@ -10,27 +11,27 @@
   {:fn f :targets (set ts)})
 
 (defprotocol PropagatorSet
-  (add! [this prop]
+  (add! [pset prop]
     "Add propagator.")
-  (remove! [this prop]
+  (remove! [pset prop]
     "Remove propagator.")
-  (propagate-all! [this x]
+  (propagate-all! [pset x]
     "Invokes the propagator function for every added propagator, passing x as only argument.")
-  (propagators [this]
+  (propagators [pset]
     "Returns the set of added propagators."))
 
 
-(deftype DefaultPropagatorSet [ps]
+(defrecord DefaultPropagatorSet [ps]
   PropagatorSet
-  (add! [this p]
+  (add! [pset p]
     {:pre [(fn? (:fn p))]}
     (swap! ps #(conj % p)))
-  (remove! [this p]
+  (remove! [pset p]
     {:pre [(fn? (:fn p))]}
     (swap! ps #(disj % p)))
-  (propagate-all! [this x]
+  (propagate-all! [pset x]
     (doseq [p @ps] ((:fn p) x)))
-  (propagators [this]
+  (propagators [pset]
     @ps))
 
 (defn propagator-set

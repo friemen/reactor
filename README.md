@@ -64,7 +64,7 @@ Further examples:
 
 API
 ---
-See also [core.clj](src/reactor/core.clj).
+See also [generated documentation](doc/index.html).
 
 ### Factories
 

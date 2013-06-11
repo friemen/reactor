@@ -42,11 +42,11 @@
 
 ;; a FRP animation program
 
-(defn moving-circle [t]
+(defn- moving-circle [t]
   (let [x (+ 100 (* 100 (Math/sin t)))]
     (Circle. x 150 20)))
 
-(defn pulsing-rectangle [t]
+(defn- pulsing-rectangle [t]
   (let [asin (-> t (Math/sin) (Math/abs))
         w (* asin 100)
         h (* asin 50)
@@ -54,21 +54,12 @@
         y (- 100 (/ h 2))]
     (Rectangle. x y w h)))
 
-(defn create-shapes [t]
+(defn- create-shapes [t]
   [(moving-circle t)
    (pulsing-rectangle t)])
 
-
-(def shapes (->> (r/time 50)
-                 (r/lift create-shapes)))
-
-(def f (frame "Hello FRP World" (shape-panel shapes)))
-
-(->> shapes (r/process-with (fn [_] (.repaint f))))
-
-
-
-
-
-
-
+(defn start-animation []
+  (let [shapes (->> (r/time 50)
+                 (r/lift create-shapes))
+        f (frame "Hello FRP World" (shape-panel shapes))]
+    (->> shapes (r/process-with (fn [_] (.repaint f))))))

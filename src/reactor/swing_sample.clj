@@ -46,15 +46,25 @@
   (let [x (+ 100 (* 100 (Math/sin t)))]
     (Circle. x 150 20)))
 
-(defn create-shapes [t]
-  [(moving-circle t)])
+(defn pulsing-rectangle [t]
+  (let [asin (-> t (Math/sin) (Math/abs))
+        w (* asin 100)
+        h (* asin 50)
+        x (- 150 (/ w 2))
+        y (- 100 (/ h 2))]
+    (Rectangle. x y w h)))
 
-(declare shapes)
+(defn create-shapes [t]
+  [(moving-circle t)
+   (pulsing-rectangle t)])
+
+
+(def shapes (->> (r/time 50)
+                 (r/lift create-shapes)))
 
 (def f (frame "Hello FRP World" (shape-panel shapes)))
-(def shapes (->> (r/time 50)
-                 (r/lift create-shapes)
-                 (r/process-with (fn [_] (.repaint f)))))
+
+(->> shapes (r/process-with (fn [_] (.repaint f))))
 
 
 

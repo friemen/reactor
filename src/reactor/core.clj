@@ -381,7 +381,7 @@
 (defn stop-timer
   "Stops the time signal from being updated."
   [tsig]
-  (-> tsig .executor x/cancel)
+  (-> tsig :executor x/cancel)
   (swap! timer-signals #(disj % tsig)))
 
 
@@ -389,7 +389,7 @@
   "Stops all time signals at once."
   []
   (doseq [t @timer-signals]
-    (-> t .executor x/cancel))
+    (-> t :executor x/cancel))
   (reset! timer-signals #{}))
 
 

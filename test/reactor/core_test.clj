@@ -2,72 +2,7 @@
   (:require [reactor.core :as r])
   (:use clojure.test))
 
-(deftest hold-test
-  (let [e (r/eventsource)
-        s (->> e r/hold)]
-    (r/raise-event! e "Foo")
-    (is (= "Foo" (r/getv s)))))
-
-
-(deftest as-signal-test
-  (is (= 42 (r/getv (r/as-signal 42))))
-  (let [e (r/eventsource)
-        s (r/as-signal e)]
-    (r/raise-event! e 42)
-    (is (= 42 (r/getv s)))
-    (is (identical? s (r/as-signal s)))))
-
-
-(deftest lift-test
-  (let [n1 (r/signal 0)
-        n2 (r/signal 0)
-        n1half (r/lift / n1 2) ; always contains the half of n1's value 
-        sum (r/lift + n1 n2) ; always contains the sum of n1 and n2
-        sum>10 (->> sum
-                    (r/trigger #(when (> % 10) "ALARM!"))
-                    (r/react-with #(println %)))]
-    (r/setv! n1 4)
-    (is (= 4 (r/getv sum))) ; check that sum is up-to-date
-    (is (= 2 (r/getv n1half))) ; check that n1half is up-to-date
-    (r/setv! n2 8)
-    (is (= 12 (r/getv sum))))) ; check that sum is up-to-date
-
-
-(deftest trigger-test
-  (let [n (r/signal 0)
-        alarm-events (->> n (r/trigger #(when (> % 10) "ALARM!")))
-        alarm-signal (->> alarm-events r/as-signal)]
-    (r/setv! n 9)
-    (is (= nil (r/getv alarm-signal))) ; not ALARM must be set
-    (r/setv! n 11)
-    (is (= "ALARM!" (r/getv alarm-signal))))) ; check that ALARM is set
-
-
-(deftest filter-test
-  (let [e1 (r/eventsource)
-        e2 (->> e1 (r/filter #(not= "Foo" %)))
-        sig (->> e2 r/as-signal)]
-    (is (nil? (r/getv sig)))
-    (r/raise-event! e1 "Foo")
-    (is (nil? (r/getv sig))) ; ensure that Foo was filtered out
-    (r/raise-event! e1 "Bar")
-    (is (= "Bar" (r/getv sig))))) ; check that Bar passed
-
-
-(deftest switch-test
-  (let [e1 (r/eventsource)
-        sig1 (r/signal 0)
-        sig2 (->> e1 (r/switch sig1))
-        sig3 (r/signal 10)]
-    (r/setv! sig1 42)
-    (is (= 42 (r/getv sig2))) ; ensure that sig2 follows sig1
-    (r/raise-event! e1 sig3) ; emit sig3 as event
-    (is (= 10 (r/getv sig2))) ; now sig2 show reflect sig3
-    (r/setv! sig1 4711) ; change sig1
-    (is (= 10 (r/getv sig2))) ; sig1 change must not get propagated to sig2
-    (r/setv! sig3 13) ; change sig3
-    (is (= 13 (r/getv sig2))))) ; make sure sig2 follows sig3
-
+;; tests for combinators on eventsources
 
 (deftest pass-test
   (let [exec1used (atom false)
@@ -86,7 +21,118 @@
     (is (= "Foo" (r/getv sig2)))))
 
 
-;; naive state machine implementation
+(deftest hold-test
+  (let [e (r/eventsource)
+        s (->> e r/hold)]
+    (r/raise-event! e "Foo")
+    (is (= "Foo" (r/getv s)))))
+
+
+(deftest as-signal-test
+  (is (= 42 (r/getv (r/as-signal 42))))
+  (let [e (r/eventsource)
+        s (r/as-signal e)]
+    (is (nil? (r/getv s)))
+    (r/raise-event! e 42)
+    (is (= 42 (r/getv s)))
+    (is (identical? s (r/as-signal s)))))
+
+
+(deftest map-test
+  (let [e1 (r/eventsource)
+        e2 (->> e1 (r/map (partial * -1)))
+        s2 (->> e2 r/hold)
+        e3 (->> e1 (r/map 42))
+        s3 (->> e3 r/hold)]
+    (r/raise-event! e1 13)
+    (is (= -13 (r/getv s2)))
+    (is (= 42 (r/getv s3)))))
+
+
+(deftest filter-test
+  (let [e1 (r/eventsource)
+        e2 (->> e1 (r/filter #(not= "Foo" %)))
+        sig (->> e2 r/as-signal)]
+    (is (nil? (r/getv sig)))
+    (r/raise-event! e1 "Foo")
+    (is (nil? (r/getv sig))) ; ensure that Foo was filtered out
+    (r/raise-event! e1 "Bar")
+    (is (= "Bar" (r/getv sig))))) ; check that Bar passed
+
+
+(deftest merge-test
+  (let [e1 (r/eventsource)
+        e2 (r/eventsource)
+        e3 (r/merge e1 e2)
+        s3 (->> e3 r/hold)]
+    (r/raise-event! e1 42)
+    (is (= 42 (r/getv s3)))
+    (r/raise-event! e2 13)
+    (is (= 13 (r/getv s3)))))
+
+
+; reduce test see below
+
+(deftest switch-test
+  (let [e1 (r/eventsource)
+        sig1 (r/signal 0)
+        sig2 (->> e1 (r/switch sig1))
+        sig3 (r/signal 10)]
+    (r/setv! sig1 42)
+    (is (= 42 (r/getv sig2))) ; ensure that sig2 follows sig1
+    (r/raise-event! e1 sig3) ; emit sig3 as event
+    (is (= 10 (r/getv sig2))) ; now sig2 show reflect sig3
+    (r/setv! sig1 4711) ; change sig1
+    (is (= 10 (r/getv sig2))) ; sig1 change must not get propagated to sig2
+    (r/setv! sig3 13) ; change sig3
+    (is (= 13 (r/getv sig2))))) ; make sure sig2 follows sig3
+
+
+;; tests for combinators on signals
+
+(deftest trigger-test
+  (let [n (r/signal 0)
+        alarm-events (->> n (r/trigger #(when (> % 10) "ALARM!")))
+        alarm-signal (->> alarm-events r/as-signal)]
+    (r/setv! n 9)
+    (is (= nil (r/getv alarm-signal))) ; not ALARM must be set
+    (r/setv! n 11)
+    (is (= "ALARM!" (r/getv alarm-signal))))) ; check that ALARM is set
+
+
+(deftest setvs!-test
+  (let [sigs (map #(r/signal %) [1 2 3 4])]
+    (r/setvs! sigs [41 42 43])
+    (is (= [41 42 43 4] (map r/getv sigs)))))
+
+
+(deftest bind!-test
+  (let [inputsigs [(r/signal 0) (r/signal 0)]
+        prod (r/signal nil)
+        quot (r/signal nil)]
+    (r/bind! (fn [n1 n2] [(* n1 n2) (if (zero? n2) 0 (/ n1 n2))])
+             inputsigs
+             [prod quot])
+    (r/setvs! inputsigs [2 3])
+    (is (= [6 2/3] (map r/getv [prod quot])))))
+
+
+(deftest lift-test
+  (let [n1 (r/signal 0)
+        n2 (r/signal 0)
+        n1half (r/lift / n1 2) ; always contains the half of n1's value 
+        sum (r/lift + n1 n2) ; always contains the sum of n1 and n2
+        sum>10 (->> sum
+                    (r/trigger #(when (> % 10) "ALARM!"))
+                    (r/react-with #(println %)))]
+    (r/setv! n1 4)
+    (is (= 4 (r/getv sum))) ; check that sum is up-to-date
+    (is (= 2 (r/getv n1half))) ; check that n1half is up-to-date
+    (r/setv! n2 8)
+    (is (= 12 (r/getv sum))))) ; check that sum is up-to-date
+
+
+;; naive state machine implementation for reduce test
 
 (defn- illegalstate
   [s evt]
@@ -117,7 +163,8 @@
 
 (defn mouse-action [action position] {:action action, :pos position})
 
-;; test demonstrating how a statemachine can be used in conjunction with event sources
+;; test demonstrating how a statemachine can be used
+;; in conjunction with event sources and reduce
 
 (deftest reduce-test
   (let [initial-state {:state :idle, :path []}

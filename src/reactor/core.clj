@@ -20,7 +20,7 @@
 ; rename trigger to changes
 ; rename event source to event stream?
 ; rename signal to behaviour?
-; introduce hold, make as-signal internal
+; rename reduce to collect?
 ; introduce snapshot
 ; introduce calm
 ; introduce delay
@@ -243,6 +243,7 @@
     (subscribe sig sig-listener [newsig])
     (subscribe evtsource switcher [newsig])
     newsig))
+
 
 (defn reduce
   "Creates a signal from an event source. On each event

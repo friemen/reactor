@@ -39,7 +39,7 @@ Example for event processing:
     
     (r/raise-event! e1 "Hello")
     (r/raise-event! e2 "World")
-    => prints "[Hello 1369...]"
+    => prints occurence with "Hello", but "World" is suppressed
 
 Example for signal processing:
 
@@ -54,7 +54,7 @@ Example for signal processing:
                      (r/trigger #(when (> % 10) "ALARM!"))
                      (r/react-with #(println %))))
     => sum>10 is an event source. whenever sum's value > 10
-       the string "[ALARM! 1369...]" is printed.
+       the occurence containing "ALARM!" is printed.
 
 Further examples:
 
@@ -120,7 +120,7 @@ See also [core.clj](src/reactor/core.clj).
 Current state
 -------------
 This library is currently purely experimental stuff.
-The goal for now is to produce an API that supports the FRP programming model.
+The goal for now is to produce an API that supports the formulation of FRP-based solutions.
 Second step is to provide some more elaborate samples that demonstrate how non-trivial
 applications like GUI, message processing, animation or games would be described with FRP.
 If those samples provide evidence that FRP really simplifies the program code in certain 
@@ -136,12 +136,14 @@ with asynchronity.
 References
 ----------
 
+E.Amsden - [A Survey of Functional Reactive Programming](http://www.cs.rit.edu/~eca7215/frp-independent-study/Survey.pdf)
+
+A.Courtney - [Frappe: Functional Reactive Programming in Java](http://haskell.cs.yale.edu/wp-content/uploads/2011/02/frappe-padl01.pdf)
+
 C.Elliot, P.Hudak - [Functional Reactive Animation](http://conal.net/papers/icfp97/icfp97.pdf)
 
 C.Elliot - [Push-pull functional reactive programming](http://conal.net/papers/push-pull-frp/push-pull-frp.pdf)
 
-A.Courtney - [Frappe: Functional Reactive Programming in Java](http://haskell.cs.yale.edu/wp-content/uploads/2011/02/frappe-padl01.pdf)
-
 I.Maier, T.Rompf, M.Odersky - [Deprecating the Observer Pattern](http://lamp.epfl.ch/~imaier/pub/DeprecatingObserversTR2010.pdf)
 
-E.Amsden - [A Survey of Functional Reactive Programming](http://www.cs.rit.edu/~eca7215/frp-independent-study/Survey.pdf)
+L.Meyerovich - [Flapjax: Functional Reactive Web Programming](http://www.cs.brown.edu/research/pubs/theses/ugrad/2007/lmeyerov.pdf)

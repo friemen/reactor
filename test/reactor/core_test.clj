@@ -2,6 +2,22 @@
   (:require [reactor.core :as r])
   (:use clojure.test))
 
+(deftest hold-test
+  (let [e (r/eventsource)
+        s (->> e r/hold)]
+    (r/raise-event! e "Foo")
+    (is (= "Foo" (r/getv s)))))
+
+
+(deftest as-signal-test
+  (is (= 42 (r/getv (r/as-signal 42))))
+  (let [e (r/eventsource)
+        s (r/as-signal e)]
+    (r/raise-event! e 42)
+    (is (= 42 (r/getv s)))
+    (is (identical? s (r/as-signal s)))))
+
+
 (deftest lift-test
   (let [n1 (r/signal 0)
         n2 (r/signal 0)

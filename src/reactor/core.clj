@@ -16,6 +16,18 @@
 ;; 
 ;; A follower is a function or reactive that is affected by events or value changes.
 
+; TODO
+; rename trigger to changes
+; rename event source to event stream?
+; rename signal to behaviour?
+; introduce hold, make as-signal internal
+; introduce snapshot
+; introduce calm
+; introduce delay
+
+; how can automatic lifting be achieved?
+; how should errors been handled?
+; propagate events through a toplogical sorted graph
 
 
 ;; types and default implementations
@@ -55,7 +67,7 @@
   (setv! [this value]
     "Sets the value of this signal."))
 
-(deftype DefaultSignal [role a ps executor]
+(defrecord DefaultSignal [role a ps executor]
   Signal
   (getv [_]
     (deref a))
@@ -65,7 +77,7 @@
 (extend DefaultSignal Reactive reactive-fns)
 
 
-(deftype Time [role a executor ps]
+(defrecord Time [role a executor ps]
   Signal
   (getv [_]
     (deref a))
@@ -79,7 +91,7 @@
   (raise-event! [this evt]
     "Sends a new event."))
 
-(deftype DefaultEventSource [role ps executor]
+(defrecord DefaultEventSource [role ps executor]
   EventSource
   (raise-event! [_ evt]
     (x/schedule executor #(p/propagate-all! ps (Occurence. evt (System/currentTimeMillis))))))
@@ -150,6 +162,14 @@
 
 ;; combinators for event sources
 
+(defn hold
+  "Creates a new signal that stores the last event as value."
+  [evtsource]
+  (let [newsig (signal :hold nil)]
+     (subscribe evtsource #(setv! newsig (:event %)) [newsig])
+     newsig))
+
+
 (defn as-signal
   "Returns the given argument, if it is already a signal.
    If the given argument is an event source, returns a new
@@ -161,9 +181,7 @@
    (satisfies? Signal sig-or-val)
    sig-or-val
    (satisfies? EventSource sig-or-val)
-   (let [newsig (signal :eventsink nil)]
-     (subscribe sig-or-val #(setv! newsig (:event %)) [newsig])
-     newsig)
+   (hold sig-or-val)
    :else (signal sig-or-val)))
 
 
@@ -338,7 +356,7 @@
 (defn stop-timer
   "Stops the time signal from being updated."
   [tsig]
-  (-> tsig .executor x/shutdown)
+  (-> tsig .executor x/cancel)
   (swap! timer-signals #(disj % tsig)))
 
 
@@ -346,7 +364,7 @@
   "Stops all time signals at once."
   []
   (doseq [t @timer-signals]
-    (-> t .executor x/shutdown))
+    (-> t .executor x/cancel))
   (reset! timer-signals #{}))
 
 

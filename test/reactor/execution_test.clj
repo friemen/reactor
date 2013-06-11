@@ -15,7 +15,7 @@
     (reset! c 0)
     (x/schedule exec tick)
     (wait 200)
-    (x/shutdown exec)
+    (x/cancel exec)
     (is (< 3 @c))))
 
 
@@ -24,7 +24,7 @@
     (reset! c 0)
     (x/schedule exec tick)
     (wait 200)
-    (x/shutdown exec)
+    (x/cancel exec)
     (wait 200)
     (is (> 6 @c))))
 
@@ -36,3 +36,25 @@
     (wait 50)
     (is (not= nil t)) ; actually executed
     (is (not= (Thread/currentThread) t)))) ; but not in same thread
+
+
+(deftest delay-test
+  (let [exec (x/delayed-executor 100)
+        c (atom 0)]
+    (x/schedule exec #(swap! c inc))
+    (wait 50)
+    (is (= 0 @c))
+    (wait 100)
+    (is (= 1 @c))))
+
+
+(deftest calm-test
+  (let [exec (x/calmed-executor 100)
+        c (atom 0)
+        f #(swap! c inc)]
+    (x/schedule exec f) (wait 10)
+    (x/schedule exec f) (wait 10)
+    (x/schedule exec f) (wait 10)
+    (is (= 0 @c))
+    (wait 100)
+    (is (= 1 @c))))

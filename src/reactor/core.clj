@@ -161,10 +161,12 @@
 
 (defn hold
   "Creates a new signal that stores the last event as value."
-  [evtsource]
-  (let [newsig (signal :hold nil)]
-     (subscribe evtsource #(setv! newsig (:event %)) [newsig])
-     newsig))
+  ([evtsource]
+     (hold nil evtsource))
+  ([initial-value evtsource]
+     (let [newsig (signal :hold initial-value)]
+       (subscribe evtsource #(setv! newsig (:event %)) [newsig])
+       newsig)))
 
 
 (defn- as-signal

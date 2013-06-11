@@ -6,4 +6,6 @@
   :dependencies [[org.clojure/clojure "1.5.1"]]
   :plugins [[codox/codox.leiningen "0.6.4"]]
   :repl-options {:port 9090}
-  :codox {:exclude [reactor.swing-sample]})
+  :codox {:exclude [reactor.swing-sample]
+          :src-dir-uri "https://github.com/friemen/reactor/blob/master"
+          :src-linenum-anchor-prefix "L"})

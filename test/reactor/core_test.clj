@@ -24,9 +24,13 @@
 
 (deftest hold-test
   (let [e (r/eventsource)
-        s (->> e r/hold)]
+        s1 (->> e r/hold)
+        s2 (->> e (r/hold "Bar"))]
+    (is (= nil (r/getv s1)))
+    (is (= "Bar" (r/getv s2)))
     (r/raise-event! e "Foo")
-    (is (= "Foo" (r/getv s)))))
+    (is (= "Foo" (r/getv s1)))
+    (is (= "Foo" (r/getv s2)))))
 
 
 (deftest map-test

@@ -8,6 +8,7 @@ is to enable declarative specifications of event and signal
 processing chains (using the ->> macro and familiar functions
 like filter, map or merge).
 
+[![Build Status](https://travis-ci.org/friemen/reactor.png?branch=master)](https://travis-ci.org/friemen/reactor)
 
 Concepts
 --------

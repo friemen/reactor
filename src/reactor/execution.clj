@@ -88,6 +88,12 @@
   (TimerExecutor. period (atom nil)))
 
 
+(defn wait
+  "Sleeps the current thread for msecs milliseconds."
+  [msecs]
+  (Thread/sleep msecs))
+
+
 (defn shutdown-pools
   []
   (.shutdown tp)

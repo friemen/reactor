@@ -7,14 +7,11 @@
 (defn tick []
   (swap! c inc))
 
-(defn wait [n]
-  (Thread/sleep n))
-
 (deftest schedule-timer-test
   (let [exec (x/timer-executor 50)]
     (reset! c 0)
     (x/schedule exec tick)
-    (wait 200)
+    (x/wait 200)
     (x/cancel exec)
     (is (< 3 @c))))
 
@@ -23,9 +20,9 @@
   (let [exec (x/timer-executor 50)]
     (reset! c 0)
     (x/schedule exec tick)
-    (wait 200)
+    (x/wait 200)
     (x/cancel exec)
-    (wait 200)
+    (x/wait 200)
     (is (> 6 @c))))
 
 
@@ -33,7 +30,7 @@
   (let [exec (x/executor)
         t (atom nil)]
     (x/schedule exec #(reset! t (Thread/currentThread)))
-    (wait 50)
+    (x/wait 50)
     (is (not= nil t)) ; actually executed
     (is (not= (Thread/currentThread) t)))) ; but not in same thread
 
@@ -42,9 +39,9 @@
   (let [exec (x/delayed-executor 100)
         c (atom 0)]
     (x/schedule exec #(swap! c inc))
-    (wait 50)
+    (x/wait 50)
     (is (= 0 @c))
-    (wait 100)
+    (x/wait 100)
     (is (= 1 @c))))
 
 
@@ -52,9 +49,9 @@
   (let [exec (x/calmed-executor 100)
         c (atom 0)
         f #(swap! c inc)]
-    (x/schedule exec f) (wait 10)
-    (x/schedule exec f) (wait 10)
-    (x/schedule exec f) (wait 10)
+    (x/schedule exec f) (x/wait 10)
+    (x/schedule exec f) (x/wait 10)
+    (x/schedule exec f) (x/wait 10)
     (is (= 0 @c))
-    (wait 100)
+    (x/wait 100)
     (is (= 1 @c))))

@@ -51,7 +51,7 @@ Example for signal processing:
     => sum == 10, and sum is updated whenever n1 or n2 changes.
     
     (def sum>10 (->> sum
-                     (r/trigger #(when (> % 10) "ALARM!"))
+                     (r/changes #(when (> % 10) "ALARM!"))
                      (r/react-with #(println %))))
     => sum>10 is an event source. whenever sum's value > 10
        the occurence containing "ALARM!" is printed.
@@ -85,9 +85,13 @@ See also [core.clj](src/reactor/core.clj).
 
 **hold** -- Creates a signal from an event source where the event of the last occurence is stored as signal value.
 
+**map** -- Creates a new event sources that transforms every event.
+
 **filter** -- Creates a new event source that applies a predicate to decide whether an occurence is propagated. 
 
-**map** -- Creates a new event sources that transforms every event.
+**delay** -- Creates a new event source that propagates occurences from a given event source with a delay.
+
+**calm** -- Creates a new event source that propagates occurences from a given event source with a delay. If an occurence arrives while the delay is active the previous occurence is omitted. 
 
 **merge** -- Creates a new event source that emits an occurence whenever one of its source event sources emits an occurence.
 
@@ -108,7 +112,7 @@ See also [core.clj](src/reactor/core.clj).
 
 **getv** -- Returns the current value of the signal.
 
-**trigger** -- Creates a new event source from a signal that emits an occurence everytime the value is changed. The new value is taken as event.
+**changes** -- Creates a new event source from a signal that emits an occurence everytime the value is changed. The new value is taken as event.
 
 **lift** -- Creates a new signal that applies a function to the values of all signals whenever a value changes. The new signal stores the result of the function application.
 

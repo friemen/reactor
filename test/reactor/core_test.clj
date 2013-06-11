@@ -1,5 +1,6 @@
 (ns reactor.core-test
-  (:require [reactor.core :as r])
+  (:require [reactor.core :as r]
+            [reactor.execution :as x])
   (:use clojure.test))
 
 ;; tests for combinators on eventsources
@@ -50,6 +51,31 @@
     (is (= "Bar" (r/getv sig))))) ; check that Bar passed
 
 
+(deftest delay-test
+  (let [e1 (r/eventsource)
+        s (->> e1 (r/delay 50) r/hold)]
+    (r/raise-event! e1 "Bar")
+    (x/wait 10)
+    (is (= nil (r/getv s)))
+    (r/raise-event! e1 "Foo")
+    (x/wait 40)
+    (is (= "Bar" (r/getv s)))
+    (x/wait 50)
+    (is (= "Foo" (r/getv s)))))
+
+
+(deftest calm-test
+  (let [e (r/eventsource)
+        sum (->> e (r/calm 50) (r/reduce + 0))]
+    (r/raise-event! e 1)
+    (x/wait 10)
+    (r/raise-event! e 40) ; cancels the first event
+    (x/wait 60)
+    (r/raise-event! e 2)
+    (x/wait 60)
+    (is (= 42 (r/getv sum)))))
+
+
 (deftest merge-test
   (let [e1 (r/eventsource)
         e2 (r/eventsource)
@@ -75,7 +101,14 @@
     (r/setv! sig3 13) ; change sig3
     (is (= 13 (r/getv sig2))))) ; make sure sig2 follows sig3
 
-; reduce test see end of file
+
+(deftest reduce-test
+  (let [e (r/eventsource)
+        sum (->> e (r/reduce + 0))]
+    (r/raise-event! e 1)
+    (r/raise-event! e 41)
+    (is (= 42 (r/getv sum)))))
+
 
 (deftest snapshot-test
   (let [e (r/eventsource)
@@ -88,9 +121,9 @@
 
 ;; tests for combinators on signals
 
-(deftest trigger-test
+(deftest changes-test
   (let [n (r/signal 0)
-        alarm-events (->> n (r/trigger #(when (> % 10) "ALARM!")))
+        alarm-events (->> n (r/changes #(when (> % 10) "ALARM!")))
         alarm-signal (->> alarm-events r/hold)]
     (r/setv! n 9)
     (is (= nil (r/getv alarm-signal))) ; not ALARM must be set
@@ -121,7 +154,7 @@
         n1half (r/lift / n1 2) ; always contains the half of n1's value 
         sum (r/lift + n1 n2) ; always contains the sum of n1 and n2
         sum>10 (->> sum
-                    (r/trigger #(when (> % 10) "ALARM!"))
+                    (r/changes #(when (> % 10) "ALARM!"))
                     (r/react-with #(println %)))]
     (r/setv! n1 4)
     (is (= 4 (r/getv sum))) ; check that sum is up-to-date

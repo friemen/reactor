@@ -1,5 +1,5 @@
 (ns reactor.core
-  (:refer-clojure :exclude [filter merge map reduce time])
+  (:refer-clojure :exclude [delay filter merge map reduce time])
   (:require [reactor.propagation :as p]
             [reactor.execution :as x]))
 
@@ -17,12 +17,9 @@
 ;; A follower is a function or reactive that is affected by events or value changes.
 
 ; TODO
-; rename trigger to changes
 ; rename event source to event stream?
 ; rename signal to behaviour?
 ; rename reduce to collect?
-; introduce calm
-; introduce delay
 
 ; how can automatic lifting be achieved?
 ; how should errors been handled?
@@ -215,6 +212,23 @@
     newes))
 
 
+(defn delay
+  "Creates an event source that receives occurences delayed by
+   msecs milliseconds from the given event source."
+  [msecs evtsource]
+  (->> evtsource (pass (x/delayed-executor msecs))))
+
+
+(defn calm
+  "Creates an event source that receives occurences delayed by
+   msecs milliseconds from the given event source. When another
+   event arrives while the delay is active the previous event
+   is omitted and the delay starts from the beginning for the
+   other event."
+  [msecs evtsource]
+  (->> evtsource (pass (x/calmed-executor msecs))))
+
+
 (defn merge
   "Produces a new event source from others, so that the
    new event source raises an event whenever one of the
@@ -279,7 +293,7 @@
 ;; combinators for signals
 
 
-(defn trigger
+(defn changes
   "Creates an event source from a signal so that an event is raised
    whenever the signal value changes. If the evt-or-fn argument
    evaluates to a function, then it is applied to the signals
@@ -287,9 +301,9 @@
    result. If evt-or-fn is not a function it is assumed to be the
    event that will be raised on signal value change."
   ([sig]
-     (trigger identity sig))
+     (changes identity sig))
   ([evt-or-fn sig]
-  (let [newes (eventsource :trigger)]
+  (let [newes (eventsource :changes)]
     (subscribe sig
                (fn [new]
                  (if-let [evt (if (fn? evt-or-fn)

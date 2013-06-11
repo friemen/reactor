@@ -9,7 +9,7 @@
         exec1 (reify reactor.execution.Executor
                (schedule [_ f] (reset! exec1used true) (f)))
         e1 (r/eventsource)
-        sig1 (->> e1 (r/pass exec1) r/as-signal)
+        sig1 (->> e1 (r/pass exec1) r/hold)
         exec2used (atom false)
         exec2 (reify reactor.execution.Executor
                (schedule [_ f] (reset! exec2used true) (f)))
@@ -28,16 +28,6 @@
     (is (= "Foo" (r/getv s)))))
 
 
-(deftest as-signal-test
-  (is (= 42 (r/getv (r/as-signal 42))))
-  (let [e (r/eventsource)
-        s (r/as-signal e)]
-    (is (nil? (r/getv s)))
-    (r/raise-event! e 42)
-    (is (= 42 (r/getv s)))
-    (is (identical? s (r/as-signal s)))))
-
-
 (deftest map-test
   (let [e1 (r/eventsource)
         e2 (->> e1 (r/map (partial * -1)))
@@ -52,7 +42,7 @@
 (deftest filter-test
   (let [e1 (r/eventsource)
         e2 (->> e1 (r/filter #(not= "Foo" %)))
-        sig (->> e2 r/as-signal)]
+        sig (->> e2 r/hold)]
     (is (nil? (r/getv sig)))
     (r/raise-event! e1 "Foo")
     (is (nil? (r/getv sig))) ; ensure that Foo was filtered out
@@ -71,8 +61,6 @@
     (is (= 13 (r/getv s3)))))
 
 
-; reduce test see below
-
 (deftest switch-test
   (let [e1 (r/eventsource)
         sig1 (r/signal 0)
@@ -87,13 +75,23 @@
     (r/setv! sig3 13) ; change sig3
     (is (= 13 (r/getv sig2))))) ; make sure sig2 follows sig3
 
+; reduce test see end of file
+
+(deftest snapshot-test
+  (let [e (r/eventsource)
+        s1 (r/signal 42)
+        s2 (->> e (r/snapshot s1 13))]
+    (is (= 13 (r/getv s2)))
+    (r/raise-event! e "Foo")
+    (is (= 42 (r/getv s2)))))
+
 
 ;; tests for combinators on signals
 
 (deftest trigger-test
   (let [n (r/signal 0)
         alarm-events (->> n (r/trigger #(when (> % 10) "ALARM!")))
-        alarm-signal (->> alarm-events r/as-signal)]
+        alarm-signal (->> alarm-events r/hold)]
     (r/setv! n 9)
     (is (= nil (r/getv alarm-signal))) ; not ALARM must be set
     (r/setv! n 11)

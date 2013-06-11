@@ -26,7 +26,7 @@
 
 ;; Swing based infrastructure for displaying shapes
 
-(defn shape-panel []
+(defn shape-panel [shapes]
   (proxy [JPanel] []
       (paint [g] (doseq [s (r/getv shapes)] (draw s g)))))
 
@@ -49,11 +49,16 @@
 (defn create-shapes [t]
   [(moving-circle t)])
 
+(declare shapes)
 
-(def f (frame "Hello FRP World" (shape-panel)))
-
+(def f (frame "Hello FRP World" (shape-panel shapes)))
 (def shapes (->> (r/time 50)
                  (r/lift create-shapes)
                  (r/process-with (fn [_] (.repaint f)))))
+
+
+
+
+
 
 

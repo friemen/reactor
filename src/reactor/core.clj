@@ -21,7 +21,6 @@
 ; rename event source to event stream?
 ; rename signal to behaviour?
 ; rename reduce to collect?
-; introduce snapshot
 ; introduce calm
 ; introduce delay
 
@@ -170,7 +169,7 @@
      newsig))
 
 
-(defn as-signal
+(defn- as-signal
   "Returns the given argument, if it is already a signal.
    If the given argument is an event source, returns a new
    signal that stores the last event as value. The initial
@@ -252,10 +251,21 @@
    The result of the function is set as new value of the signal."
   ([f evtsource]
      (reduce f nil))
-  ([f value evtsource]
-     (let [newsig (signal :reduce value)]
+  ([f initial-value evtsource]
+     (let [newsig (signal :reduce initial-value)]
        (subscribe evtsource #(setv! newsig (f (getv newsig) (:event %))) [newsig])
        newsig)))
+
+
+(defn snapshot
+  "Creates a signal that takes the value of the given signal whenever
+   the given event source raises an event."
+  ([sig evtsource]
+     (snapshot sig nil evtsource))
+  ([sig initial-value evtsource]
+  (let [newsig (signal :snapshot initial-value)]
+    (subscribe evtsource (fn [_] (setv! newsig (getv sig))) [newsig])
+    newsig)))
 
 
 (defn react-with

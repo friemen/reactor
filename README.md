@@ -83,7 +83,7 @@ See also [core.clj](src/reactor/core.clj).
 
 **raise-event!** -- Creates a new occurence. The event will be propagated to all followers.
 
-**as-signal** -- Creates a signal from a constant value or an event source. In the latter case the event of an occurence is stored in a signal.
+**hold** -- Creates a signal from an event source where the event of the last occurence is stored as signal value.
 
 **filter** -- Creates a new event source that applies a predicate to decide whether an occurence is propagated. 
 
@@ -94,6 +94,8 @@ See also [core.clj](src/reactor/core.clj).
 **switch** -- Creates a signal from an event source that follows signals that were delivered as event. 
 
 **reduce** -- Creates a signal from an event source that changes its value by applying a function to the current value of the signal and an event. 
+
+**snapshot** -- Creates a signal that takes a value from another signal whenever an event occurs.
 
 **react-with** -- Subscribes a listener function to an event source.
 

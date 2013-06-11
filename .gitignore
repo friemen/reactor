@@ -3,7 +3,7 @@
 /classes
 /checkouts
 /bin
-/autodoc
+/doc
 /.settings
 pom.xml
 *~

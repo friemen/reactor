@@ -21,10 +21,10 @@
 ; rename event source to event stream?
 ; rename signal to behaviour?
 ; rename reduce to collect?
-
+; raise-event! impl should recognize if an Occurence is passed and use its timestamp 
 ; how can automatic lifting be achieved?
-; how should errors been handled?
-; propagate events through a toplogical sorted graph
+; how should errors be handled?
+; events should be propagated through a toplogical sorted graph
 
 
 ;; types and default implementations
@@ -33,7 +33,8 @@
 
 (defprotocol Reactive
   (subscribe [react f followers]
-    "Subscribes a one-argument listener function that influences the followers.
+    "Subscribes a one-argument listener function. The followers seq contains reactives
+     that are affected by side-effects that the listener function has.
      In case of an event source the listener fn is invoked with an Occurence instance.
      In case of a signal the listener fn is invoked with the new value of the signal.")
   (unsubscribe [react f]
@@ -224,10 +225,10 @@
 
 (defn calm
   "Creates an event source that receives occurences delayed by
-   msecs milliseconds from the given event source. When another
-   event arrives while the delay is active the previous event
+   msecs milliseconds from the given event source. When a subsequent
+   event arrives before a current event is propagated the current event
    is omitted and the delay starts from the beginning for the
-   other event."
+   new event."
   [msecs evtsource]
   (->> evtsource (pass (x/calmed-executor msecs))))
 
@@ -275,7 +276,7 @@
 
 
 (defn snapshot
-  "Creates a signal that takes the value of the given signal whenever
+  "Creates a signal that takes the value of the signal sig whenever
    the given event source raises an event."
   ([sig evtsource]
      (snapshot sig nil evtsource))
@@ -300,7 +301,7 @@
   "Creates an event source from a signal so that an event is raised
    whenever the signal value changes. If the fn-or-val argument
    evaluates to a function, then it is applied to the signals
-   new value. An event is raised when the function return a non-nil
+   new value. An event is raised when the function returns a non-nil
    result. If fn-or-val is not a function it is assumed to be the
    event that will be raised on signal value change."
   ([sig]

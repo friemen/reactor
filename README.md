@@ -3,12 +3,12 @@ reactor
 
 Exploring functional reactive programming (FRP) with Clojure.
 
+[![Build Status](https://travis-ci.org/friemen/reactor.png?branch=master)](https://travis-ci.org/friemen/reactor)
+
 The purpose of the factories and combinators as implemented here 
 is to enable declarative specifications of event and signal
 processing chains (using the ->> macro and familiar functions
 like filter, map or merge).
-
-[![Build Status](https://travis-ci.org/friemen/reactor.png?branch=master)](https://travis-ci.org/friemen/reactor)
 
 Concepts
 --------
@@ -30,33 +30,35 @@ Examples
 --------
 
 Example for event processing:
+```clojure
+(def e1 (r/eventsource))
+(def e2 (r/eventsource))
 
-    (def e1 (r/eventsource))
-    (def e2 (r/eventsource))
-    
-    (->> (r/merge e1 e2)
-         (r/filter #(not= % "World"))
-         (r/react-with #(println "EVENT:" %)))
-    
-    (r/raise-event! e1 "Hello")
-    (r/raise-event! e2 "World")
-    => prints occurence with "Hello", but "World" is suppressed
+(->> (r/merge e1 e2)
+     (r/filter #(not= % "World"))
+     (r/react-with #(println "EVENT:" %)))
+
+(r/raise-event! e1 "Hello")
+(r/raise-event! e2 "World")
+;=> prints occurence with "Hello", but "World" is suppressed
+```
 
 Example for signal processing:
+```clojure
+(def n1 (r/signal 0))
+(def n2 (r/signal 0))
 
-    (def n1 (r/signal 0))
-    (def n2 (r/signal 0))
-    
-    (def sum (->> (r/lift + n1 n2)))
-    (r/setvs! [n1 n2] [3 7])
-    => sum == 10, and sum is updated whenever n1 or n2 changes.
-    
-    (def sum>10 (->> sum
-                     (r/changes #(when (> % 10) "ALARM!"))
-                     (r/react-with #(println %))))
-    => sum>10 is an event source. whenever sum's value > 10
-       the occurence containing "ALARM!" is printed.
+(def sum (->> (r/lift + n1 n2)))
+(r/setvs! [n1 n2] [3 7])
+;=> sum == 10, and sum is updated whenever n1 or n2 changes.
 
+(def sum>10 (->> sum
+                 (r/changes #(when (> % 10) "ALARM!"))
+                 (r/react-with #(println %))))
+;=> sum>10 is an event source. whenever sum's value > 10
+;   the occurence containing "ALARM!" is printed.
+```
+       
 Further examples:
 
 [Swing animation example](src/reactor/swing_sample.clj).
@@ -147,6 +149,8 @@ E.Amsden - [A Survey of Functional Reactive Programming](http://www.cs.rit.edu/~
 
 A.Courtney - [Frappe: Functional Reactive Programming in Java](http://haskell.cs.yale.edu/wp-content/uploads/2011/02/frappe-padl01.pdf)
 
+E.Czaplicki - [The ELM Programming Language](http://elm-lang.org)
+
 C.Elliot, P.Hudak - [Functional Reactive Animation](http://conal.net/papers/icfp97/icfp97.pdf)
 
 C.Elliot - [Push-pull functional reactive programming](http://conal.net/papers/push-pull-frp/push-pull-frp.pdf)
@@ -154,3 +158,11 @@ C.Elliot - [Push-pull functional reactive programming](http://conal.net/papers/p
 I.Maier, T.Rompf, M.Odersky - [Deprecating the Observer Pattern](http://lamp.epfl.ch/~imaier/pub/DeprecatingObserversTR2010.pdf)
 
 L.Meyerovich - [Flapjax: Functional Reactive Web Programming](http://www.cs.brown.edu/research/pubs/theses/ugrad/2007/lmeyerov.pdf)
+
+
+License
+=======
+
+Copyright 2013 F.Riemenschneider
+
+Distributed under the Eclipse Public License, the same as Clojure.

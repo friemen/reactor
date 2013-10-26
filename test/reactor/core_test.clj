@@ -3,6 +3,25 @@
             [reactor.execution :as x])
   (:use clojure.test))
 
+;; subscribe / unsubscribe test
+
+(deftest subscription-test
+  (testing "Subscribe / Unsubscribe"
+    (let [es (r/eventsource)]
+      (r/subscribe es nil? [:nil])
+      (is (= '(:nil) (r/followers es)))
+      (r/unsubscribe es constantly) ; this must have no effect
+      (is (= '(:nil) (r/followers es)))
+      (r/unsubscribe es nil?)
+      (is (empty? (r/followers es)))))
+  (testing "Unsubscribe all"
+    (let [es (r/eventsource)]
+      (r/subscribe es nil? [:nil])
+      (is (= '(:nil) (r/followers es)))
+      (r/unsubscribe es nil)
+      (is (empty? (r/followers es))))))
+
+
 ;; tests for combinators on eventsources
 
 (deftest pass-test

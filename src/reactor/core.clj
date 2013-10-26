@@ -18,9 +18,6 @@
 ;; A follower is a function or reactive that is affected by events or value changes.
 
 ; TODO
-; rename event source to event stream?
-; rename signal to behaviour?
-; rename reduce to collect?
 ; raise-event! impl should recognize if an Occurence is passed and use its timestamp 
 ; how can automatic lifting be achieved?
 ; how should errors be handled?
@@ -50,7 +47,9 @@
                 (p/add! (.ps r) (p/propagator f followers))
                 r)
    :unsubscribe (fn [r f]
-                  (doseq [p (->> (.ps r) p/propagators (clojure.core/filter #(= (:fn %) f)))]
+                  (doseq [p (->> (.ps r)
+                                 p/propagators
+                                 (clojure.core/filter #(or (nil? f) (= (:fn %) f))))]
                     (p/remove! (.ps r) p))
                   r)
    :followers (fn [r]
@@ -63,7 +62,7 @@
   (getv [sig]
     "Returns the current value of this signal.")
   (setv! [sig value]
-    "Sets the value of this signal."))
+    "Sets the value of this signal and returns the value."))
 
 (defrecord DefaultSignal [role a ps executor]
   Signal
@@ -145,7 +144,8 @@
 
 (defn pass
   "Creates a reactive of the same type as the given reactive.
-   Uses the specified executor to handle the event or value propagation in a different thread."
+   Uses the specified executor to handle the event or value propagation in a different thread.
+   See also protocol Executor in ns reactor.execution."
   [executor react]
   (cond
    (satisfies? Signal react)

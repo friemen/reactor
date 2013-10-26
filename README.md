@@ -25,6 +25,8 @@ A *reactive* is an abstraction of event source and signal.
 
 A *follower* is a function or reactive that is affected by events or value changes.
 
+(The terms *signal* and *event source* were inspired by the paper 
+[Genuinely Functional User Interfaces](http://haskell.cs.yale.edu/wp-content/uploads/2011/02/genuinely-functional-guis.pdf).)
 
 Examples
 --------
@@ -148,6 +150,8 @@ References
 E.Amsden - [A Survey of Functional Reactive Programming](http://www.cs.rit.edu/~eca7215/frp-independent-study/Survey.pdf)
 
 A.Courtney - [Frappe: Functional Reactive Programming in Java](http://haskell.cs.yale.edu/wp-content/uploads/2011/02/frappe-padl01.pdf)
+
+A.Courtney, C.Elliot - [Genuinely Functional User Interfaces](http://haskell.cs.yale.edu/wp-content/uploads/2011/02/genuinely-functional-guis.pdf)
 
 E.Czaplicki - [The ELM Programming Language](http://elm-lang.org)
 

@@ -111,6 +111,8 @@ See also [core.clj](src/reactor/core.clj).
 
 ### Functions applying to Signals
 
+**as-signal** -- Takes an arbitraty value. If it's a signal, returns it unchanged. If it's an event source returns a new signal that holds the last event. Otherwise returns a new signal with the given value.
+
 **setv!** -- Sets the value of one signal. If the old value and the new value are different the value is propagated to followers of the signal.
 
 **setvs!** -- Sets values for some signals, values are propagated if respective old and new values differ.
@@ -119,7 +121,9 @@ See also [core.clj](src/reactor/core.clj).
 
 **changes** -- Creates a new event source from a signal that emits an occurence everytime the value is changed. The new value is taken as event.
 
-**lift** -- Creates a new signal that applies a function to the values of all signals whenever a value changes. The new signal stores the result of the function application.
+**lift\*** -- Creates a new signal that applies a function to the values of all signals whenever a value changes. The new signal stores the result of the function application.
+
+**lift** -- Macro that takes an s-expr, lifts it (and all subexpressions) and returns a signal that changes whenever a value of the signals of the s-expr changes.
 
 **bind!** -- Connects input with output signals. On every value change a function is applied to current input values. The resulting values are set as value to the output signals.
 

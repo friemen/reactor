@@ -58,7 +58,7 @@
 
 
 
-(defprotocol Signal  
+(defprotocol Signal
   (getv [sig]
     "Returns the current value of this signal.")
   (setv! [sig value]
@@ -170,7 +170,7 @@
        newsig)))
 
 
-(defn- as-signal
+(defn as-signal
   "Returns the given argument, if it is already a signal.
    If the given argument is an event source, returns a new
    signal that stores the last event as value. The initial
@@ -364,13 +364,23 @@
   output-sigs)
 
 
-(defn lift
+(defn lift*
   "Creates a signal that is updated by applying the n-ary function
    f to the values of the input signals whenever one value changes."
   [f & sigs]
   (let [newsig (signal :lift 0)]
     (bind! f (vec (clojure.core/map as-signal sigs)) [newsig])
     newsig))
+
+
+(defmacro lift
+  "Marco that takes the s-expr form, lifts it (and all subexpressions) and
+   returns a signal that changes whenever a value of the signals of the
+   s-expr changes."
+  [form]
+  (if (list? form)
+    `(lift* ~(first form) ~@(clojure.core/map #(list 'reactor.core/lift %) (rest form)))
+    `(as-signal ~form)))
 
 
 (defn process-with

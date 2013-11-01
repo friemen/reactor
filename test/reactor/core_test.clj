@@ -171,11 +171,11 @@
     (is (= [6 2/3] (map r/getv [prod quot])))))
 
 
-(deftest lift-test
+(deftest lift*-test
   (let [n1 (r/signal 0)
         n2 (r/signal 0)
-        n1half (r/lift / n1 2) ; always contains the half of n1's value 
-        sum (r/lift + n1 n2) ; always contains the sum of n1 and n2
+        n1half (r/lift* / n1 2) ; always contains the half of n1's value 
+        sum (r/lift* + n1 n2) ; always contains the sum of n1 and n2
         sum>10 (->> sum
                     (r/changes #(when (> % 10) "ALARM!"))
                     (r/react-with #(println %)))]
@@ -184,6 +184,13 @@
     (is (= 2 (r/getv n1half))) ; check that n1half is up-to-date
     (r/setv! n2 8)
     (is (= 12 (r/getv sum))))) ; check that sum is up-to-date
+
+
+(deftest lift-test
+  (let [n1 (r/signal 0)
+        plus10*2 (r/lift (* 2 (+ 10 n1)))]
+    (r/setv! n1 4)
+    (is (= 28 (r/getv plus10*2)))))
 
 
 ;; naive state machine implementation for reduce test

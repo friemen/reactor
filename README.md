@@ -50,7 +50,7 @@ Example for signal processing:
 (def n1 (r/signal 0))
 (def n2 (r/signal 0))
 
-(def sum (->> (r/lift + n1 n2)))
+(def sum (->> (r/lift (+ n1 n2))))
 (r/setvs! [n1 n2] [3 7])
 ;=> sum == 10, and sum is updated whenever n1 or n2 changes.
 
@@ -121,7 +121,7 @@ See also [core.clj](src/reactor/core.clj).
 
 **changes** -- Creates a new event source from a signal that emits an occurence everytime the value is changed. The new value is taken as event.
 
-**lift\*** -- Creates a new signal that applies a function to the values of all signals whenever a value changes. The new signal stores the result of the function application.
+**lift*** -- Creates a new signal that applies a function to the values of all signals whenever a value changes. The new signal stores the result of the function application.
 
 **lift** -- Macro that takes an s-expr, lifts it (and all subexpressions) and returns a signal that changes whenever a value of the signals of the s-expr changes.
 

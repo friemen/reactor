@@ -18,10 +18,8 @@
 ;; A follower is a function or reactive that is affected by events or value changes.
 
 ; TODO
-; raise-event! impl should recognize if an Occurence is passed and use its timestamp 
-; how can automatic lifting be achieved?
 ; how should errors be handled?
-; events should be propagated through a toplogical sorted graph
+; events should be propagated through a toplogically sorted graph
 
 
 ;; types and default implementations
@@ -88,10 +86,18 @@
   (raise-event! [this evt]
     "Sends a new event."))
 
+
+(defn- as-occ
+  [evt-or-occ]
+  (if (instance? Occurence evt-or-occ)
+    evt-or-occ
+    (Occurence. evt-or-occ (System/currentTimeMillis))))
+
+
 (defrecord DefaultEventSource [role ps executor]
   EventSource
   (raise-event! [_ evt]
-    (x/schedule executor #(p/propagate-all! ps (Occurence. evt (System/currentTimeMillis))))))
+    (x/schedule executor #(p/propagate-all! ps (as-occ evt)))))
 
 (extend DefaultEventSource Reactive reactive-fns)
 

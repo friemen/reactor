@@ -373,13 +373,61 @@
     newsig))
 
 
+(defn if*
+  "Creates a signal that contains the value of t-sig if cond-sig contains
+   true, otherwise the value of f-sig."
+  [cond-sig t-sig f-sig]
+  (let [newsig (signal :if nil)
+        switch-fn (fn [b] (setv! newsig (if b (getv t-sig) (getv f-sig))))
+        propagate-fn (fn [x] (setv! newsig (if (getv cond-sig) (getv t-sig) (getv f-sig))))]
+    (subscribe cond-sig switch-fn [newsig])
+    (subscribe t-sig propagate-fn [newsig])
+    (subscribe f-sig propagate-fn [newsig])
+    (switch-fn (getv cond-sig))
+    newsig))
+
+
+(defn and*
+  "Creates a signal that contains the result of a logical And of all signals values."
+  [& sigs]
+  (apply (partial lift* (fn [& xs]
+                          (if (every? identity xs)
+                            (last xs)
+                            false)))
+         sigs))
+
+
+(defn or*
+  "Creates a signal that contains the result of a logical Or of all signals values."
+  [& sigs]
+  (apply (partial lift* (fn [& xs]
+                   (if-let [r (some identity xs)]
+                     r
+                     false)))
+         sigs))
+
+
+(defn- lift-params
+  [forms]
+  (clojure.core/map #(list 'reactor.core/lift %) forms))
+
+
 (defmacro lift
-  "Marco that takes the s-expr form, lifts it (and all subexpressions) and
+  "Marco that takes the form as s-expr, lifts it (and all subexpressions) and
    returns a signal that changes whenever a value of the signals of the
-   s-expr changes."
+   s-expr changes.
+   Supports besides function application only the following subset of Clojure forms:
+      if, or, and"
   [form]
   (if (list? form)
-    `(lift* ~(first form) ~@(clojure.core/map #(list 'reactor.core/lift %) (rest form)))
+    (case (first form)
+      if (let [[_ c t f] form]
+            `(if* (reactor.core/lift ~c)
+                  (reactor.core/lift ~t)
+                  ~(if f `(reactor.core/lift ~f))))
+      or `(or* ~@(lift-params (rest form)))
+      and `(and* ~@(lift-params (rest form)))
+      `(lift* ~(first form) ~@(clojure.core/map #(list 'reactor.core/lift %) (rest form))))
     `(as-signal ~form)))
 
 

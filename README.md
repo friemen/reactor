@@ -51,23 +51,28 @@ Example for signal processing:
 	(def n2 (r/signal 1)))
 
 (def n1*3+n2 (r/lift (if (> n1 0)
-			       (let [n1*2 (+ n1 n1)
-				     n1*3 (+ n1*2 n1)]
-				 (+ n2 n1*3)))))
+	                     (let [n1*2 (+ n1 n1)
+				               n1*3 (+ n1*2 n1)]
+				            (+ n2 n1*3)))))
 ;=> #'user/n1*3+n2
 
-(r/setvs! [n1 n2] [3 7]) ; sum is updated whenever n1 or n2 changes.
+(r/setvs! [n1 n2] [3 7]) ; signal is updated whenever n1 or n2 changes.
 ;=> nil
 
 (r/getv n1*3+n2)
 ;=> 16
 
 
+(def sum (r/lift (+ n1 n2)))
+;=> #'user/sum
+
 (def sum>10 (->> sum
                  (r/changes #(when (> % 10) "ALARM!"))
                  (r/react-with #(println %))))
-;=> sum>10 is an event source. whenever sum's value > 10
-;   the occurence containing "ALARM!" is printed.
+;=> #'user/sum>10
+
+; sum>10 is an event source. Whenever sum's value > 10
+; an occurence containing "ALARM!" is printed.
 ```
        
 Further examples:

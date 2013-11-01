@@ -50,7 +50,7 @@ Example for signal processing:
 (def n1 (r/signal 0))
 (def n2 (r/signal 0))
 
-(def sum (->> (r/lift (+ n1 n2))))
+(def sum (r/lift (+ n1 n2)))
 (r/setvs! [n1 n2] [3 7])
 ;=> sum == 10, and sum is updated whenever n1 or n2 changes.
 

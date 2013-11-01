@@ -89,7 +89,7 @@
                       (r/filter #(= (:trigger %) :clicked))
                       (r/map #((juxt :x :y) %))
                       (r/hold [150 100]))
-        shapes (r/lift create-shapes time clickpos)
+        shapes (r/lift (create-shapes time clickpos))
         panel (shape-panel shapes)
         f (frame "Hello FRP World" panel)]
     (connect-mouse! panel mouseevents)

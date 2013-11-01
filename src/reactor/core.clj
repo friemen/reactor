@@ -407,28 +407,35 @@
          sigs))
 
 
-(defn- lift-params
-  [forms]
-  (clojure.core/map #(list 'reactor.core/lift %) forms))
+(defn- lift-exprs
+  [exprs]
+  (clojure.core/map #(list 'reactor.core/lift %) exprs))
 
 
 (defmacro lift
-  "Marco that takes the form as s-expr, lifts it (and all subexpressions) and
+  "Marco that takes an expr, lifts it (and all subexpressions) and
    returns a signal that changes whenever a value of the signals of the
-   s-expr changes.
-   Supports besides function application only the following subset of Clojure forms:
-      if, or, and"
-  [form]
-  (if (list? form)
-    (case (first form)
-      if (let [[_ c t f] form]
-            `(if* (reactor.core/lift ~c)
-                  (reactor.core/lift ~t)
-                  ~(if f `(reactor.core/lift ~f))))
-      or `(or* ~@(lift-params (rest form)))
-      and `(and* ~@(lift-params (rest form)))
-      `(lift* ~(first form) ~@(clojure.core/map #(list 'reactor.core/lift %) (rest form))))
-    `(as-signal ~form)))
+   sexpr changes.
+   Supports in addition to application of regular functions the following
+   subset of Clojure forms:
+      if, or, and, let"
+  [expr]
+  (if (list? expr)
+    (case (first expr)
+      let (let [[_ bindings & exprs] expr
+                lifted-bindings (->> bindings
+                                     (partition 2)
+                                     (mapcat (fn [[s expr]] [s (list 'reactor.core/lift expr)]))
+                                     vec)]
+            `(let ~lifted-bindings ~@(lift-exprs exprs)))
+      if (let [[_ c t f] expr]
+            `(if* (lift ~c)
+                  (lift ~t)
+                  ~(if f `(lift ~f) `(lift nil))))
+      or `(or* ~@(lift-exprs (rest expr)))
+      and `(and* ~@(lift-exprs (rest expr)))
+      `(lift* ~(first expr) ~@(lift-exprs (rest expr)))) ; regular function application
+    `(as-signal ~expr))) ;; no list, make sure it's a signal
 
 
 (defn process-with

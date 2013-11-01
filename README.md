@@ -47,12 +47,21 @@ Example for event processing:
 
 Example for signal processing:
 ```clojure
-(def n1 (r/signal 0))
-(def n2 (r/signal 0))
+(do (def n1 (r/signal 0))
+	(def n2 (r/signal 1)))
 
-(def sum (r/lift (+ n1 n2)))
-(r/setvs! [n1 n2] [3 7])
-;=> sum == 10, and sum is updated whenever n1 or n2 changes.
+(def n1*3+n2 (r/lift (if (> n1 0)
+			       (let [n1*2 (+ n1 n1)
+				     n1*3 (+ n1*2 n1)]
+				 (+ n2 n1*3)))))
+;=> #'user/n1*3+n2
+
+(r/setvs! [n1 n2] [3 7]) ; sum is updated whenever n1 or n2 changes.
+;=> nil
+
+(r/getv n1*3+n2)
+;=> 16
+
 
 (def sum>10 (->> sum
                  (r/changes #(when (> % 10) "ALARM!"))

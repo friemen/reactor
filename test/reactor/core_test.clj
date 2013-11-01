@@ -186,6 +186,51 @@
     (is (= 12 (r/getv sum))))) ; check that sum is up-to-date
 
 
+(deftest lift-let-test
+  (let [n1 (r/signal 2)
+        n2 (r/signal 3)
+        n1*3+n2 (r/lift (let [n1*2 (+ n1 n1)
+                              n1*3 (+ n1*2 n1)]
+                          (+ n2 n1*3)))]
+    (is (= 9 (r/getv n1*3+n2)))
+    (r/setvs! [n1 n2] [3 4])
+    (is (= 13 (r/getv n1*3+n2)))))
+
+
+(deftest lift-if-test
+  (let [n1 (r/signal -1)
+        n2 (r/signal 1)
+        ifelses (r/lift (if (> n1 0) n2 (+ n1 n2)))
+        ifs (r/lift (if (< n1 0) n1))]
+    (is (= 0 (r/getv ifelses)))
+    (is (= -1 (r/getv ifs)))
+    (r/setvs! [n1 n2] [2 5])
+    (is (= 5 (r/getv ifelses)))
+    (is (= nil (r/getv ifs)))
+    (r/setv! n2 6)
+    (is (= (r/getv ifelses)))))
+
+
+(deftest lift-and-test
+  (let [b1 (r/signal true)
+        b2 (r/signal false)
+        ands (r/lift (and b1 b2))]
+    (is (= false (r/getv ands)))
+    (r/setvs! [b1 b2] [1 true])
+    (is (= true (r/getv ands)))))
+
+
+(deftest lift-or-test
+  (let [b1 (r/signal true)
+        b2 (r/signal false)
+        ors (r/lift (or b1 b2))]
+    (is (= true (r/getv ors)))
+    (r/setvs! [b1 b2] [1 true])
+    (is (= 1 (r/getv ors)))
+    (r/setvs! [b1 b2] [nil false])
+    (is (= false (r/getv ors)))))
+
+
 (deftest lift-test
   (let [n1 (r/signal 0)
         plus10*2 (r/lift (* 2 (+ 10 n1)))]

@@ -222,7 +222,7 @@
      newsig)
    (satisfies? EventSource react)
    (let [newes (eventsource :eventpass executor)]
-     (subscribe react #(raise-event! newes (:event %)) [newes])
+     (subscribe react #(raise-event! newes %) [newes])
      newes)))
 
 
@@ -266,9 +266,10 @@
     (subscribe evtsource
                #(raise-event!
                  newes
-                 (if (fn? transform-fn-or-value)
-                   (transform-fn-or-value (:event %))
-                   transform-fn-or-value))
+                 (Occurence. (if (fn? transform-fn-or-value)
+                               (transform-fn-or-value (:event %))
+                               transform-fn-or-value)
+                             (:timestamp %)))
                [newes])
     newes))
 
@@ -279,7 +280,7 @@
   [pred evtsource]
   (let [newes (eventsource :filter)]
     (subscribe evtsource #(when (pred (:event %))
-                              (raise-event! newes (:event %)))
+                              (raise-event! newes %))
                [newes])
     newes))
 
@@ -308,14 +309,14 @@
   [& evtsources]
   (let [newes (eventsource :merge)]
     (doseq [es evtsources]
-      (subscribe es #(raise-event! newes (:event %)) [newes]))
+      (subscribe es #(raise-event! newes %) [newes]))
     newes))
 
 
 (defn switch
-  "Creates a signal that initially behaves like the given signal sig.
+  "Creates a signal that initially follows the given signal sig.
    Upon any occurence of the given event source the signal switches to
-   behave like the signal that the occurence contained."
+   follow the signal that the occurence contained."
   [sig-or-value evtsource]
   (let [sig (as-signal sig-or-value)
         newsig (signal :switch (getv sig))
@@ -328,6 +329,19 @@
     (subscribe sig sig-listener [newsig])
     (subscribe evtsource switcher [newsig])
     newsig))
+
+
+(defn reduce-occ
+  "Creates a signal from an event source. On each event
+   the given 2-arg function is invoked with the current signals
+   value as first and the occurence as second parameter.
+   The result of the function is set as new value of the signal."
+  ([f evtsource]
+     (reduce-occ f nil))
+  ([f initial-value evtsource]
+     (let [newsig (signal :reduce initial-value)]
+       (subscribe evtsource #(setv! newsig (f (getv newsig) %)) [newsig])
+       newsig)))
 
 
 (defn reduce

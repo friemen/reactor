@@ -133,6 +133,14 @@
     (is (= 42 (r/getv sum)))))
 
 
+(deftest reduce-occ-test
+  (let [e (r/eventsource)
+        sum (->> e (r/reduce-occ (fn [s {v :event ts :timestamp}] (+ s v)) 0))]
+    (r/raise-event! e 1)
+    (r/raise-event! e 41)
+    (is (= 42 (r/getv sum)))))
+
+
 (deftest snapshot-test
   (let [e (r/eventsource)
         s1 (r/signal 42)
@@ -260,20 +268,22 @@
   (throw (IllegalStateException. (str "Action " (:action evt) " is not expected in state " (:state s)))))
 
 (defmulti draw-statemachine
-  (fn [s evt] (:state s))
+  (fn [s occ] (:state s))
   :default :idle)
 
 (defmethod draw-statemachine :idle
-  [s evt]
-  (case (:action evt)
-    :left-press {:state :drawing
-                 :path [(:pos evt)]}
-    :move s
-    (illegalstate s evt)))
+  [s occ]
+  (let [evt (:event occ)]
+    (case (:action evt)
+      :left-press {:state :drawing
+                   :path [(:pos evt)]}
+      :move s
+      (illegalstate s evt))))
 
 (defmethod draw-statemachine :drawing
-  [s evt]
-  (let [newpath (conj (:path s) (:pos evt))]
+  [s occ]
+  (let [evt (:event occ)
+        newpath (conj (:path s) (:pos evt))]
     (case (:action evt)
       :left-release (do (println "Drawing" newpath)
                         {:state :idle
@@ -290,7 +300,7 @@
 (deftest reduce-test
   (let [initial-state {:state :idle, :path []}
         mouse-events (r/eventsource)
-        drawing-state (->> mouse-events (r/reduce draw-statemachine initial-state))]
+        drawing-state (->> mouse-events (r/reduce-occ draw-statemachine initial-state))]
     (r/raise-event! mouse-events (mouse-action :left-press [1 2]))
     (is (= {:state :drawing
             :path [[1 2]]}

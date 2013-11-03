@@ -118,6 +118,8 @@ See also [core.clj](src/reactor/core.clj).
 
 **reduce** -- Creates a signal from an event source that changes its value by applying a function to the current value of the signal and an event. 
 
+**reduce-occ** -- Like reduce, but second argument is an occurence instead of the bare event.
+
 **snapshot** -- Creates a signal that takes a value from another signal whenever an event occurs.
 
 **react-with** -- Subscribes a listener function to an event source.

@@ -62,14 +62,31 @@
   (setv! [sig value]
     "Sets the value of this signal and returns the value."))
 
-(defrecord DefaultSignal [role a ps executor]
+(defrecord DefaultSignal [role a ps]
   Signal
   (getv [_]
     (deref a))
   (setv! [_ value]
-    (x/schedule executor #(reset! a value))))
+    (reset! a value)))
 
 (extend DefaultSignal Reactive reactive-fns)
+
+
+(defrecord LaggedSignal [role lag r q-ref ps]
+  Signal
+  (getv [_]
+    (deref r))
+  (setv! [_ value]
+    (dosync
+     (let [vs (conj @q-ref value)]
+       (if (> (count vs) lag)
+        (let [[v & rest] vs]
+          (ref-set q-ref (vec rest))
+          (ref-set r v))
+        (ref-set q-ref vs))
+       value))))
+
+(extend LaggedSignal Reactive reactive-fns)
 
 
 (defrecord Time [role a executor ps]
@@ -83,15 +100,20 @@
 
 
 (defprotocol EventSource
-  (raise-event! [this evt]
+  (raise-event! [evtsource evt]
     "Sends a new event."))
 
+
+(defn now
+  []
+  "Returns System/currentTimeMillis."
+  (System/currentTimeMillis))
 
 (defn- as-occ
   [evt-or-occ]
   (if (instance? Occurence evt-or-occ)
     evt-or-occ
-    (Occurence. evt-or-occ (System/currentTimeMillis))))
+    (Occurence. evt-or-occ (now))))
 
 
 (defrecord DefaultEventSource [role ps executor]
@@ -116,24 +138,64 @@
            ps (p/propagator-set)]
        (add-watch a :signal (fn [ctx key old new]
                               (if (not= old new)
+                                (x/schedule executor #(p/propagate-all! ps new)))))
+       (DefaultSignal. role a ps))))
+
+
+(defn lagged-signal
+  ([lag initial-value]
+     (lagged-signal :signal x/current-thread lag initial-value))
+  ([role lag initial-value]
+     (lagged-signal role x/current-thread lag initial-value))
+  ([role executor lag initial-value]
+     (let [r (ref initial-value)
+           q-ref (ref [])
+           ps (p/propagator-set)]
+       (add-watch r :signal (fn [ctx key old new]
+                              (if (not= old new)
                                 (p/propagate-all! ps new))))
-       (DefaultSignal. role a ps executor))))
+       (LaggedSignal. role lag r q-ref ps))))
+
 
 
 (defonce ^:private timer-signals (atom #{}))
 
+(defn start-timer
+  "Starts the timer to update the given time signal."
+  [tsig]
+  (when-not (@timer-signals tsig)
+    (let [update-fn #(reset! (:a tsig) (now))]
+      (update-fn)
+      (x/schedule (:executor tsig) update-fn)
+      (swap! timer-signals #(conj % tsig)))))
+
+
+(defn stop-timer
+  "Stops the time signal from being updated."
+  [tsig]
+  (-> tsig :executor x/cancel)
+  (swap! timer-signals #(disj % tsig)))
+
+
+(defn stop-all-timers
+  "Stops all time signals at once."
+  []
+  (doseq [t @timer-signals]
+    (-> t :executor x/cancel))
+  (reset! timer-signals #{}))
+
+
 (defn time
   "Creates time signal that updates its value every resolution ms."
   [resolution]
-  (let [a (atom (System/currentTimeMillis))
+  (let [a (atom (now))
         executor (x/timer-executor resolution)
         ps (p/propagator-set)
         newsig (Time. :time a executor ps)]
     (add-watch a :signal (fn [ctx key old new]
                            (if (not= old new)
                              (p/propagate-all! ps new))))
-    (x/schedule executor #(reset! a (System/currentTimeMillis)))
-    (swap! timer-signals #(conj % newsig))
+    (start-timer newsig)
     newsig))
 
 
@@ -270,7 +332,7 @@
 
 (defn reduce
   "Creates a signal from an event source. On each event
-   the given function is invoked with the current signals
+   the given 2-arg function is invoked with the current signals
    value as first and the event as second parameter.
    The result of the function is set as new value of the signal."
   ([f evtsource]
@@ -301,6 +363,19 @@
 
 
 ;; combinators for signals
+
+
+(defn follow
+  "Creates a signal from an existing signal that propagates value
+   changes with the specified lag."
+  ([sig]
+     (follow 0))
+  ([lag sig]
+     (follow lag identity sig))
+  ([lag f sig]
+     (let [newsig (lagged-signal lag (if (> lag 0) nil (f (getv sig))))]
+       (subscribe sig #(setv! newsig (f %)) [newsig])
+       newsig)))
 
 
 (defn changes
@@ -417,6 +492,7 @@
   [exprs]
   (clojure.core/map #(list 'reactor.core/lift %) exprs))
 
+;; TODO fn, -> ->>
 
 (defmacro lift
   "Marco that takes an expr, lifts it (and all subexpressions) and
@@ -434,6 +510,7 @@
                                      (mapcat (fn [[s expr]] [s (list 'reactor.core/lift expr)]))
                                      vec)]
             `(let ~lifted-bindings ~@(lift-exprs exprs)))
+      ;; TODO fn (fn fn*) (let [[_ p & exprs] expr] `(signal (fn ~p )))
       if (let [[_ c t f] expr]
             `(if* (lift ~c)
                   (lift ~t)
@@ -452,19 +529,5 @@
   (bind! f (vec input-sigs) nil)
   (if (= 1 (count input-sigs)) (first input-sigs) (vec input-sigs)))
 
-
-(defn stop-timer
-  "Stops the time signal from being updated."
-  [tsig]
-  (-> tsig :executor x/cancel)
-  (swap! timer-signals #(disj % tsig)))
-
-
-(defn stop-all-timers
-  "Stops all time signals at once."
-  []
-  (doseq [t @timer-signals]
-    (-> t :executor x/cancel))
-  (reset! timer-signals #{}))
 
 

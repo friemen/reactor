@@ -74,8 +74,11 @@
   Executor
   (schedule [exec f]
     (swap! future-atom (fn [t]
-                  (when t (.cancel t false))
-                  (-> stp (.scheduleAtFixedRate f 0 period TimeUnit/MILLISECONDS)))))
+                         (when t (.cancel t false))
+                         (-> stp (.scheduleAtFixedRate #(try (f) (catch Exception ex (.printStackTrace ex)))
+                                                       0
+                                                       period
+                                                       TimeUnit/MILLISECONDS)))))
   (cancel [exec]
     (if-let [t @future-atom] (.cancel t true))))
 

@@ -144,6 +144,21 @@
 
 ;; tests for combinators on signals
 
+(deftest follow-test
+  (let [s1 (r/signal 0)
+        s2 (r/follow 2 s1)]
+    (is (nil? (r/getv s2)))
+    (r/setv! s1 1) (r/setv! s1 2)
+    (is (nil? (r/getv s2)))
+    (r/setv! s1 3)
+    (is (= 1 (r/getv s2))))
+  (let [s1 (r/signal 0)
+        s2 (->> s1 (r/follow 0 inc))]
+    (is (= 1 (r/getv s2)))
+    (r/setv! s1 3)
+    (is (= 4 (r/getv s2)))))
+
+
 (deftest changes-test
   (let [n (r/signal 0)
         alarm-events (->> n (r/changes #(when (> % 10) "ALARM!")))

@@ -133,6 +133,8 @@ See also [core.clj](src/reactor/core.clj).
 
 **getv** -- Returns the current value of the signal.
 
+**follow** -- Creates a new signal that follows a given signal with an optional lag and transformation function.
+
 **changes** -- Creates a new event source from a signal that emits an occurence everytime the value is changed. The new value is taken as event.
 
 **lift*** -- Creates a new signal that applies a function to the values of all signals whenever a value changes. The new signal stores the result of the function application.

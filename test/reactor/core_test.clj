@@ -133,12 +133,22 @@
     (is (= 42 (r/getv sum)))))
 
 
-(deftest reduce-occ-test
-  (let [e (r/eventsource)
-        sum (->> e (r/reduce-occ (fn [s {v :event ts :timestamp}] (+ s v)) 0))]
-    (r/raise-event! e 1)
-    (r/raise-event! e 41)
-    (is (= 42 (r/getv sum)))))
+(deftest reduce-t-test
+  (let [speed (r/signal 0)
+        speed-1 (->> speed (r/behind 1))
+        ticks (r/eventsource)
+        pos (->> (r/merge (->> speed
+                               r/changes
+                               (r/map (fn [_] (r/getv speed-1))))
+                          (->> ticks
+                               (r/map (fn [_] (r/getv speed)))))
+                 (r/reduce-t (fn [pos s elapsed]
+                               (+ pos (* (or s 0) elapsed)))
+                             0))]
+    (r/setv! speed 5)
+    (x/wait 10)
+    (r/raise-event! ticks nil)
+    (is (>= 60 (r/getv pos)))))
 
 
 (deftest snapshot-test
@@ -154,17 +164,12 @@
 
 (deftest follow-test
   (let [s1 (r/signal 0)
-        s2 (r/follow 2 s1)]
-    (is (nil? (r/getv s2)))
+        s2 (r/behind 2 s1)]
+    (is (= 0 (r/getv s2)))
     (r/setv! s1 1) (r/setv! s1 2)
-    (is (nil? (r/getv s2)))
+    (is (= 0 (r/getv s2)))
     (r/setv! s1 3)
-    (is (= 1 (r/getv s2))))
-  (let [s1 (r/signal 0)
-        s2 (->> s1 (r/follow 0 inc))]
-    (is (= 1 (r/getv s2)))
-    (r/setv! s1 3)
-    (is (= 4 (r/getv s2)))))
+    (is (= 1 (r/getv s2)))))
 
 
 (deftest changes-test
@@ -261,6 +266,15 @@
     (is (= 28 (r/getv plus10*2)))))
 
 
+#_(deftest lift-et-test
+  (let [t (r/time 10)
+        speed (r/signal 5)
+        pos (r/lift (+ <S> (* speed <t>)))]
+    (x/wait 10)
+    (r/setv! 10)
+    (is (= 50 (r/getv pos)))))
+
+
 ;; naive state machine implementation for reduce test
 
 (defn- illegalstate
@@ -268,22 +282,20 @@
   (throw (IllegalStateException. (str "Action " (:action evt) " is not expected in state " (:state s)))))
 
 (defmulti draw-statemachine
-  (fn [s occ] (:state s))
+  (fn [s evt] (:state s))
   :default :idle)
 
 (defmethod draw-statemachine :idle
-  [s occ]
-  (let [evt (:event occ)]
-    (case (:action evt)
+  [s evt]
+  (case (:action evt)
       :left-press {:state :drawing
                    :path [(:pos evt)]}
       :move s
-      (illegalstate s evt))))
+      (illegalstate s evt)))
 
 (defmethod draw-statemachine :drawing
-  [s occ]
-  (let [evt (:event occ)
-        newpath (conj (:path s) (:pos evt))]
+  [s evt]
+  (let [newpath (conj (:path s) (:pos evt))]
     (case (:action evt)
       :left-release (do (println "Drawing" newpath)
                         {:state :idle
@@ -300,7 +312,7 @@
 (deftest reduce-test
   (let [initial-state {:state :idle, :path []}
         mouse-events (r/eventsource)
-        drawing-state (->> mouse-events (r/reduce-occ draw-statemachine initial-state))]
+        drawing-state (->> mouse-events (r/reduce draw-statemachine initial-state))]
     (r/raise-event! mouse-events (mouse-action :left-press [1 2]))
     (is (= {:state :drawing
             :path [[1 2]]}

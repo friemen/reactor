@@ -22,7 +22,8 @@
 ; events should be propagated through a toplogically sorted graph
 
 
-;; types and default implementations
+
+;; types
 
 (defrecord Occurence [event timestamp])
 
@@ -40,63 +41,13 @@
     "Returns a keyword denoting the functional role of the reactive."))
 
 
-(def ^:private reactive-fns
-  {:subscribe (fn [r f followers]
-                (p/add! (.ps r) (p/propagator f followers))
-                r)
-   :unsubscribe (fn [r f]
-                  (doseq [p (->> (.ps r)
-                                 p/propagators
-                                 (clojure.core/filter #(or (nil? f) (= (:fn %) f))))]
-                    (p/remove! (.ps r) p))
-                  r)
-   :followers (fn [r]
-                (mapcat :targets (p/propagators (.ps r))))
-   :role (fn [r] (.role r))})
-
-
-
 (defprotocol Signal
   (getv [sig]
     "Returns the current value of this signal.")
   (setv! [sig value]
-    "Sets the value of this signal and returns the value."))
-
-(defrecord DefaultSignal [role a ps]
-  Signal
-  (getv [_]
-    (deref a))
-  (setv! [_ value]
-    (reset! a value)))
-
-(extend DefaultSignal Reactive reactive-fns)
-
-
-(defrecord LaggedSignal [role lag r q-ref ps]
-  Signal
-  (getv [_]
-    (deref r))
-  (setv! [_ value]
-    (dosync
-     (let [vs (conj @q-ref value)]
-       (if (> (count vs) lag)
-        (let [[v & rest] vs]
-          (ref-set q-ref (vec rest))
-          (ref-set r v))
-        (ref-set q-ref vs))
-       value))))
-
-(extend LaggedSignal Reactive reactive-fns)
-
-
-(defrecord Time [role a executor ps]
-  Signal
-  (getv [_]
-    (deref a))
-  (setv! [_ value]
-    (throw (UnsupportedOperationException. "A time signal cannot be set"))))
-
-(extend Time Reactive reactive-fns)
+    "Sets the value of this signal and returns the value.")
+  (last-updated [sig]
+    "Returns the absolute timestamp of the last setv!"))
 
 
 (defprotocol EventSource
@@ -104,58 +55,14 @@
     "Sends a new event."))
 
 
+(declare signal lagged-signal time eventsource)
+
+;; time utilities
+
 (defn now
   []
   "Returns System/currentTimeMillis."
   (System/currentTimeMillis))
-
-(defn- as-occ
-  [evt-or-occ]
-  (if (instance? Occurence evt-or-occ)
-    evt-or-occ
-    (Occurence. evt-or-occ (now))))
-
-
-(defrecord DefaultEventSource [role ps executor]
-  EventSource
-  (raise-event! [_ evt]
-    (x/schedule executor #(p/propagate-all! ps (as-occ evt)))))
-
-(extend DefaultEventSource Reactive reactive-fns)
-
-
-
-;; factories for signals and event sources
-
-(defn signal
-  "Creates new signal with the given initial value."
-  ([initial-value]
-     (signal :signal x/current-thread initial-value))
-  ([role initial-value]
-     (signal role x/current-thread initial-value))
-  ([role executor initial-value]
-     (let [a (atom initial-value)
-           ps (p/propagator-set)]
-       (add-watch a :signal (fn [ctx key old new]
-                              (if (not= old new)
-                                (x/schedule executor #(p/propagate-all! ps new)))))
-       (DefaultSignal. role a ps))))
-
-
-(defn lagged-signal
-  ([lag initial-value]
-     (lagged-signal :signal x/current-thread lag initial-value))
-  ([role lag initial-value]
-     (lagged-signal role x/current-thread lag initial-value))
-  ([role executor lag initial-value]
-     (let [r (ref initial-value)
-           q-ref (ref [])
-           ps (p/propagator-set)]
-       (add-watch r :signal (fn [ctx key old new]
-                              (if (not= old new)
-                                (p/propagate-all! ps new))))
-       (LaggedSignal. role lag r q-ref ps))))
-
 
 
 (defonce ^:private timer-signals (atom #{}))
@@ -185,28 +92,7 @@
   (reset! timer-signals #{}))
 
 
-(defn time
-  "Creates time signal that updates its value every resolution ms."
-  [resolution]
-  (let [a (atom (now))
-        executor (x/timer-executor resolution)
-        ps (p/propagator-set)
-        newsig (Time. :time a executor ps)]
-    (add-watch a :signal (fn [ctx key old new]
-                           (if (not= old new)
-                             (p/propagate-all! ps new))))
-    (start-timer newsig)
-    newsig))
 
-
-(defn eventsource
-  "Creates a new event source."
-  ([]
-     (eventsource :eventsource x/current-thread))
-  ([role]
-     (eventsource role x/current-thread))
-  ([role executor]
-     (DefaultEventSource. role (p/propagator-set) executor)))
 
 ;; common functions for reactives (signals and event sources)
 
@@ -331,16 +217,21 @@
     newsig))
 
 
-(defn reduce-occ
+(defn reduce-t
   "Creates a signal from an event source. On each event
    the given 2-arg function is invoked with the current signals
    value as first and the occurence as second parameter.
    The result of the function is set as new value of the signal."
   ([f evtsource]
-     (reduce-occ f nil))
+     (reduce-t f nil))
   ([f initial-value evtsource]
-     (let [newsig (signal :reduce initial-value)]
-       (subscribe evtsource #(setv! newsig (f (getv newsig) %)) [newsig])
+     (let [newsig (signal :reduce-t initial-value)]
+       (subscribe evtsource
+                  #(setv! newsig (f (getv newsig)
+                                    (:event %)
+                                    (- (:timestamp %)
+                                       (or (last-updated newsig) (:timestamp %)))))
+                  [newsig])
        newsig)))
 
 
@@ -379,16 +270,14 @@
 ;; combinators for signals
 
 
-(defn follow
-  "Creates a signal from an existing signal that propagates value
-   changes with the specified lag."
+(defn behind
+  "Creates a signal from an existing signal that reflects the values
+   with the specified lag."
   ([sig]
-     (follow 0))
+     (behind 1 sig))
   ([lag sig]
-     (follow lag identity sig))
-  ([lag f sig]
-     (let [newsig (lagged-signal lag (if (> lag 0) nil (f (getv sig))))]
-       (subscribe sig #(setv! newsig (f %)) [newsig])
+     (let [newsig (lagged-signal lag (getv sig))]
+       (subscribe sig #(setv! newsig %) [newsig])
        newsig)))
 
 
@@ -457,6 +346,12 @@
       (subscribe sig listener-fn output-sigs))
     (listener-fn nil)) ; initial value sync
   output-sigs)
+
+
+(defn bind-one!
+  [f newsig & sigs]
+  (bind! f (vec (clojure.core/map as-signal sigs)) [newsig])
+  newsig)
 
 
 (defn lift*
@@ -531,8 +426,11 @@
                   ~(if f `(lift ~f) `(lift nil))))
       or `(or* ~@(lift-exprs (rest expr)))
       and `(and* ~@(lift-exprs (rest expr)))
-      `(lift* ~(first expr) ~@(lift-exprs (rest expr)))) ; regular function application
-    `(as-signal ~expr))) ;; no list, make sure it's a signal
+      `(let [~(symbol "<S>") (reactor.core/signal nil)]
+         (bind-one! ~(first expr) ~(symbol "<S>") ~@(lift-exprs (rest expr))))) ; regular function application
+    (case expr
+      <S> (symbol "<S>")
+      `(as-signal ~expr)))) ;; no list, make sure it's a signal
 
 
 (defn process-with
@@ -544,4 +442,145 @@
   (if (= 1 (count input-sigs)) (first input-sigs) (vec input-sigs)))
 
 
+
+;; default implementations and factories
+
+(def ^:private reactive-fns
+  {:subscribe (fn [r f followers]
+                (p/add! (.ps r) (p/propagator f followers))
+                r)
+   :unsubscribe (fn [r f]
+                  (doseq [p (->> (.ps r)
+                                 p/propagators
+                                 (clojure.core/filter #(or (nil? f) (= (:fn %) f))))]
+                    (p/remove! (.ps r) p))
+                  r)
+   :followers (fn [r]
+                (mapcat :targets (p/propagators (.ps r))))
+   :role (fn [r] (.role r))})
+
+
+
+(defrecord DefaultSignal [role value-atom updated-atom ps]
+  Signal
+  (getv [_]
+    @value-atom)
+  (setv! [_ value]
+    (reset! updated-atom (now))
+    (reset! value-atom value))
+  (last-updated [sig]
+    @updated-atom))
+
+(extend DefaultSignal Reactive reactive-fns)
+
+
+(defrecord LaggedSignal [role lag value-ref q-ref ps]
+  Signal
+  (getv [_]
+    (first @value-ref))
+  (setv! [_ value]
+    (dosync
+     (let [vs (conj @q-ref [value (now)])]
+       (if (> (count vs) lag)
+        (let [[v & rest] vs]
+          (ref-set value-ref v)
+          (ref-set q-ref (vec rest)))
+        (ref-set q-ref vs))
+       value)))
+  (last-updated [sig]
+    (second @value-ref)))
+
+(extend LaggedSignal Reactive reactive-fns)
+
+
+(defrecord Time [role time-atom executor ps]
+  Signal
+  (getv [_]
+    @time-atom)
+  (setv! [_ value]
+    (throw (UnsupportedOperationException. "A time signal cannot be set")))
+  (last-updated [sig]
+    @time-atom))
+
+(extend Time Reactive reactive-fns)
+
+
+(defn- as-occ
+  [evt-or-occ]
+  (if (instance? Occurence evt-or-occ)
+    evt-or-occ
+    (Occurence. evt-or-occ (now))))
+
+
+(defrecord DefaultEventSource [role ps executor]
+  EventSource
+  (raise-event! [_ evt]
+    (x/schedule executor #(p/propagate-all! ps (as-occ evt)))))
+
+(extend DefaultEventSource Reactive reactive-fns)
+
+
+;; factories for signals and event sources
+
+(defn signal
+  "Creates new signal with the given initial value."
+  ([initial-value]
+     (signal :signal x/current-thread initial-value))
+  ([role initial-value]
+     (signal role x/current-thread initial-value))
+  ([role executor initial-value]
+     (let [a (atom initial-value)
+           updated (atom (if initial-value (now) nil))
+           ps (p/propagator-set)]
+       (add-watch a :signal (fn [ctx key old new]
+                              (if (not= old new)
+                                (x/schedule executor #(p/propagate-all! ps new)))))
+       (DefaultSignal. role a updated ps))))
+
+
+(defn lagged-signal
+  "Creates a new lagged signal that reflect values with a lag.
+   A lag of 0 means the value that was setv! is directly available via getv."
+  ([lag initial-value]
+     (lagged-signal :signal x/current-thread lag initial-value))
+  ([role lag initial-value]
+     (lagged-signal role x/current-thread lag initial-value))
+  ([role executor lag initial-value]
+     (let [r (ref (if initial-value [initial-value (now)] nil))
+           q-ref (ref (if initial-value
+                        (->> initial-value
+                             (repeat lag)
+                             (clojure.core/map #(vector % (now)))
+                             vec)
+                        []))
+           ps (p/propagator-set)]
+       (add-watch r :signal (fn [ctx key old new]
+                              (if (not= old new)
+                                (p/propagate-all! ps (first new)))))
+       (LaggedSignal. role lag r q-ref ps))))
+
+
+
+(defn time
+  "Creates time signal that updates its value every resolution ms."
+  [resolution]
+  (let [a (atom (now))
+        executor (x/timer-executor resolution)
+        ps (p/propagator-set)
+        newsig (Time. :time a executor ps)]
+    (add-watch a :signal (fn [ctx key old new]
+                           (if (not= old new)
+                             (p/propagate-all! ps new))))
+    (start-timer newsig)
+    newsig))
+
+
+(defn eventsource
+  "Creates a new event source."
+  ([]
+     (eventsource :eventsource x/current-thread))
+  ([role]
+     (eventsource role x/current-thread))
+  ([role executor]
+     (DefaultEventSource. role (p/propagator-set) executor)))
 

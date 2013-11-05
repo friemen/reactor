@@ -118,7 +118,7 @@ See also [core.clj](src/reactor/core.clj).
 
 **reduce** -- Creates a signal from an event source that changes its value by applying a function to the current value of the signal and an event. 
 
-**reduce-occ** -- Like reduce, but second argument is an occurence instead of the bare event.
+**reduce-t** -- Like reduce, but passes a third argument for elapsed time since last update of the new signal.
 
 **snapshot** -- Creates a signal that takes a value from another signal whenever an event occurs.
 
@@ -135,7 +135,7 @@ See also [core.clj](src/reactor/core.clj).
 
 **getv** -- Returns the current value of the signal.
 
-**follow** -- Creates a new signal that follows a given signal with an optional lag and transformation function.
+**behind** -- Creates a new signal that follows a given signal with a lag.
 
 **changes** -- Creates a new event source from a signal that emits an occurence everytime the value is changed. The new value is taken as event.
 

@@ -198,11 +198,11 @@
     (is (= [6 2/3] (map r/getv [prod quot])))))
 
 
-(deftest lift*-test
+(deftest apply-test
   (let [n1 (r/signal 0)
         n2 (r/signal 0)
-        n1half (r/lift* / n1 2) ; always contains the half of n1's value 
-        sum (r/lift* + n1 n2) ; always contains the sum of n1 and n2
+        n1half (r/apply / n1 2) ; always contains the half of n1's value 
+        sum (r/apply + n1 n2) ; always contains the sum of n1 and n2
         sum>10 (->> sum
                     (r/changes #(when (> % 10) "ALARM!"))
                     (r/react-with #(println %)))]
@@ -259,19 +259,22 @@
 
 
 (deftest lift-test
-  (let [n1 (r/signal 0)
-        plus10*2 (r/lift (* 2 (+ 10 n1)))]
-    (r/setv! n1 4)
-    (is (= 28 (r/getv plus10*2)))))
+  (testing "Simple expression lifting"
+    (let [n1 (r/signal 0)
+          plus10*2 (r/lift (* 2 (+ 10 n1)))]
+      (r/setv! n1 4)
+      (is (= 28 (r/getv plus10*2)))))
+  (testing "Expressions with a reference to the new signal"
+    (let [time (r/signal 0)
+          elapsed (->> time
+                       r/changes
+                       (r/map (fn [[t-1 t]] (- t t-1)))
+                       (r/hold 0))
+          s (r/lift (+ <S> (* elapsed 2)))]
+      (is (= 0 (r/getv s)))
+      (r/setv! time 2)
+      (is (= 4 (r/getv s))))))
 
-
-#_(deftest lift-et-test
-  (let [t (r/time 10)
-        speed (r/signal 5)
-        pos (r/lift (+ <S> (* speed <t>)))]
-    (x/wait 10)
-    (r/setv! 10)
-    (is (= 50 (r/getv pos)))))
 
 
 ;; naive state machine implementation for reduce test

@@ -1,6 +1,6 @@
 (ns reactor.core
   "Factories and combinators for FRP style signals and event sources."
-  (:refer-clojure :exclude [delay filter merge map reduce time])
+  (:refer-clojure :exclude [delay filter merge map reduce time apply])
   (:require [reactor.propagation :as p]
             [reactor.execution :as x]))
 
@@ -72,7 +72,7 @@
   "Starts the timer to update the given time signal."
   [tsig]
   (when-not (@timer-signals tsig)
-    (let [update-fn #(reset! (:a tsig) (now))]
+    (let [update-fn #(reset! (:time-atom tsig) (now))]
       (update-fn)
       (x/schedule (:executor tsig) update-fn)
       (swap! timer-signals #(conj % tsig)))))
@@ -111,6 +111,16 @@
    (let [newes (eventsource :eventpass executor)]
      (subscribe react #(raise-event! newes %) [newes])
      newes)))
+
+
+(defn react-with
+  "Subscribes f as listener to the reactive and returns it.
+   In case of an event source the function f receives the occurence as argument.
+   In case of a signal the function f receives a pair [old-value new-value] as argument.
+   Any return value of f is discarded."
+  [f react]
+  (subscribe react f []))
+
 
 
 ;; combinators for event sources
@@ -258,13 +268,6 @@
     newes))
 
 
-(defn react-with
-  "Subscribes f as listener to the event source and
-   returns the event source. The function f receives
-   the occurence as argument, any return value is discarded."
-  [f evtsource]
-  (subscribe evtsource f []))
-
 
 ;; combinators for signals
 
@@ -309,7 +312,7 @@
   [f sigs]
   (fn []
     (let [input-values (clojure.core/map getv sigs)
-          output-values (apply f input-values)]
+          output-values (clojure.core/apply f input-values)]
       output-values)))
 
 
@@ -336,7 +339,7 @@
                       (fn [_] (some->> (calc-outputs)
                                        as-vector
                                        (setvs! output-sigs))))]
-    (doseq [sig input-sigs]
+    (doseq [sig input-sigs :when (nil? (:no-subscribe sig))]
       (subscribe sig listener-fn output-sigs))
     (listener-fn nil)) ; initial value sync
   output-sigs)
@@ -348,12 +351,12 @@
   newsig)
 
 
-(defn lift*
+(defn apply
   "Creates a signal that is updated by applying the n-ary function
    f to the values of the input signals whenever one value changes."
   [f & sigs]
-  (let [newsig (signal :lift 0)]
-    (bind! f (vec (clojure.core/map as-signal sigs)) [newsig])
+  (let [newsig (signal :apply 0)]
+    (bind! f (clojure.core/map as-signal sigs) [newsig])
     newsig))
 
 
@@ -374,60 +377,73 @@
 (defn and*
   "Creates a signal that contains the result of a logical And of all signals values."
   [& sigs]
-  (apply (partial lift* (fn [& xs]
-                          (if (every? identity xs)
-                            (last xs)
-                            false)))
-         sigs))
+  (clojure.core/apply
+   (partial apply (fn [& xs]
+                    (if (every? identity xs)
+                      (last xs)
+                      false)))
+   sigs))
 
 
 (defn or*
   "Creates a signal that contains the result of a logical Or of all signals values."
   [& sigs]
-  (apply (partial lift* (fn [& xs]
-                   (if-let [r (some identity xs)]
-                     r
-                     false)))
-         sigs))
+  (clojure.core/apply
+   (partial apply (fn [& xs]
+                    (if-let [r (some identity xs)]
+                      r
+                      false)))
+   sigs))
 
+
+(declare lift-expr)
 
 (defn- lift-exprs
   [exprs]
-  (clojure.core/map #(list 'reactor.core/lift %) exprs))
+  (clojure.core/map lift-expr exprs))
 
-;; TODO fn, -> ->>
+;; TODO add support for fn, -> ->>
 
-
+(defn- lift-expr
+  ([expr]
+     (lift-expr expr nil))
+  ([expr sym]
+     (if (list? expr)
+       (case (first expr)
+         let (let [[_ bindings & exprs] expr
+                   lifted-bindings (->> bindings
+                                        (partition 2)
+                                        (mapcat (fn [[s expr]] [s (list 'reactor.core/lift expr)]))
+                                        vec)]
+               `(let ~lifted-bindings ~@(lift-exprs exprs)))
+         ;; TODO fn (fn fn*) (let [[_ p & exprs] expr] `(signal (fn ~p )))
+         if (let [[_ c t f] expr]
+              `(if* (lift ~c)
+                    (lift ~t)
+                    ~(if f `(lift ~f) `(lift nil))))
+         or `(or* ~@(lift-exprs (rest expr)))
+         and `(and* ~@(lift-exprs (rest expr)))
+         (if (nil? sym) ; regular function application
+           `(reactor.core/apply ~(first expr) ~@(lift-exprs (rest expr)))
+           `(bind-one! ~(first expr) ~(symbol "<S>") ~@(lift-exprs (rest expr))))) 
+       (case expr
+         <S> (symbol "<S>")
+         `(as-signal ~expr)))))  ;; no list, make sure it's a signal
 
 
 (defmacro lift
-  "Marco that takes an expr, lifts it (and all subexpressions) and
+  "Macro that takes an expr, lifts it (and all subexpressions) and
    returns a signal that changes whenever a value of the signals of the
    sexpr changes.
    Supports in addition to application of regular functions the following
    subset of Clojure forms:
       if, or, and, let"
-  [expr]
-  (if (list? expr)
-    (case (first expr)
-      let (let [[_ bindings & exprs] expr
-                lifted-bindings (->> bindings
-                                     (partition 2)
-                                     (mapcat (fn [[s expr]] [s (list 'reactor.core/lift expr)]))
-                                     vec)]
-            `(let ~lifted-bindings ~@(lift-exprs exprs)))
-      ;; TODO fn (fn fn*) (let [[_ p & exprs] expr] `(signal (fn ~p )))
-      if (let [[_ c t f] expr]
-            `(if* (lift ~c)
-                  (lift ~t)
-                  ~(if f `(lift ~f) `(lift nil))))
-      or `(or* ~@(lift-exprs (rest expr)))
-      and `(and* ~@(lift-exprs (rest expr)))
-      `(let [~(symbol "<S>") (reactor.core/signal nil)]
-         (bind-one! ~(first expr) ~(symbol "<S>") ~@(lift-exprs (rest expr))))) ; regular function application
-    (case expr
-      <S> (symbol "<S>")
-      `(as-signal ~expr)))) ;; no list, make sure it's a signal
+  ([expr]
+     `(lift 0 ~expr))
+  ([initial-value expr]
+     (let [s (symbol "<S>")]
+       `(let [~s (assoc (reactor.core/signal ~initial-value) :no-subscribe true)]
+          ~(lift-expr expr s))))) 
 
 
 (defn process-with

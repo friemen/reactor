@@ -97,6 +97,8 @@ See also [core.clj](src/reactor/core.clj).
 
 **pass** -- Creates a reactive that handles propagation/processing in a different thread. 
 
+**react-with** -- Subscribes a listener function to an event source or signal.
+
 
 ### Functions applying to Event Sources
 
@@ -122,8 +124,6 @@ See also [core.clj](src/reactor/core.clj).
 
 **snapshot** -- Creates an a new event source from an existing event source that takes a value from another signal whenever an event occurs.
 
-**react-with** -- Subscribes a listener function to an event source.
-
 
 ### Functions applying to Signals
 
@@ -139,9 +139,9 @@ See also [core.clj](src/reactor/core.clj).
 
 **changes** -- Creates a new event source from a signal that emits an occurence everytime the value is changed. The event is the pair [old-value new value].
 
-**lift*** -- Creates a new signal that applies a function to the values of all signals whenever a value changes. The new signal stores the result of the function application.
+**apply** -- Creates a new signal that applies a function to the values of all signals whenever a value changes. The new signal stores the result of the function application.
 
-**lift** -- Macro that takes an s-expr, lifts it (and all subexpressions) and returns a signal that changes whenever a value of the signals of the s-expr changes.
+**lift** -- Macro that takes a sexp, lifts it (and all subexpressions) and returns a signal that changes whenever a value of the signals of the sexp changes.
 
 **bind!** -- Connects input with output signals. On every value change a function is applied to current input values. The resulting values are set as value to the output signals.
 

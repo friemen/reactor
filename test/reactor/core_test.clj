@@ -264,7 +264,7 @@
           plus10*2 (r/lift (* 2 (+ 10 n1)))]
       (r/setv! n1 4)
       (is (= 28 (r/getv plus10*2)))))
-  (testing "Expressions with a reference to the new signal"
+  (testing "Expressions with a reference to the new signal <S>"
     (let [time (r/signal 0)
           elapsed (->> time
                        r/changes
@@ -273,7 +273,15 @@
           s (r/lift (+ <S> (* elapsed 2)))]
       (is (= 0 (r/getv s)))
       (r/setv! time 2)
-      (is (= 4 (r/getv s))))))
+      (is (= 4 (r/getv s)))))
+  (testing "Expression with a reference to elapsed time <T>"
+    (let [time (r/time 20)
+          s (r/signal 0)
+          y (r/lift 0 time (+ <S> (* s <T>)))]
+      (is (= 0 (r/getv y)))
+      (r/setv! s 1)
+      (x/wait 160)
+      (is (and (< 150 (r/getv y)) (< (r/getv y) 160))))))
 
 
 

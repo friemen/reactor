@@ -56,7 +56,7 @@
     "Sends a new event."))
 
 
-(declare signal lagged-signal time eventsource)
+(declare signal lagged-signal time elapsed-time eventsource)
 
 ;; time utilities
 
@@ -306,14 +306,7 @@
     (setv! (first sv) (second sv))))
 
 
-(defn- lift-helper
-  "Returns a 0-arg function that applies the given function f to the
-   current values of all signals."
-  [f sigs]
-  (fn []
-    (let [input-values (clojure.core/map getv sigs)
-          output-values (clojure.core/apply f input-values)]
-      output-values)))
+;; binding of signals, lifting of functions and expressions
 
 
 (defn- as-vector
@@ -333,7 +326,10 @@
    arguments and must either return a vector of m values or a single
    non-seq value."
   [f input-sigs output-sigs]
-  (let [calc-outputs (lift-helper f input-sigs)
+  (let [calc-outputs (fn []
+                       (let [input-values (clojure.core/map getv input-sigs)
+                             output-values (clojure.core/apply f input-values)]
+                         output-values))
         listener-fn (if (= 1 (count output-sigs))
                       (fn [_] (setv! (first output-sigs) (calc-outputs)))
                       (fn [_] (some->> (calc-outputs)
@@ -439,10 +435,14 @@
    subset of Clojure forms:
       if, or, and, let"
   ([expr]
-     `(lift 0 ~expr))
+     `(lift 0 nil ~expr))
   ([initial-value expr]
-     (let [s (symbol "<S>")]
-       `(let [~s (assoc (reactor.core/signal ~initial-value) :no-subscribe true)]
+     `(lift initial-value nil ~expr))
+  ([initial-value tsig expr]
+     (let [s (symbol "<S>")
+           t (symbol "<T>")]
+       `(let [~s (assoc (reactor.core/signal ~initial-value) :no-subscribe true)
+              ~@(if tsig `(~t (reactor.core/elapsed-time ~s ~tsig)))]
           ~(lift-expr expr s))))) 
 
 
@@ -512,10 +512,26 @@
     @time-atom)
   (setv! [_ value]
     (throw (UnsupportedOperationException. "A time signal cannot be set")))
-  (last-updated [sig]
+  (last-updated [_]
     @time-atom))
 
 (extend Time Reactive reactive-fns)
+
+
+;; propagate elapsed time between last update of signal and current
+;; time change
+;; provide elapsed time between last update of signal and now
+
+(defrecord ElapsedTime [role sig ps]
+  Signal
+  (getv [_]
+    (- (now) (last-updated sig)))
+  (setv! [_ value]
+    (throw (UnsupportedOperationException. "A time signal cannot be set")))
+  (last-updated [_]
+    (now)))
+
+(extend ElapsedTime Reactive reactive-fns)
 
 
 (defn- as-occ
@@ -569,9 +585,25 @@
            ps (p/propagator-set)]
        (add-watch r :signal (fn [ctx key old new]
                               (if (not= old new)
-                                (p/propagate-all! ps [(first old) (first new)]))))
+                                (x/schedule executor #(p/propagate-all! ps [(first old) (first new)])))))
        (LaggedSignal. role lag r q-ref ps))))
 
+
+(defn elapsed-time
+  "Returns a new signal that keeps the elapsed time of the last update of
+   the given signal, and propagates the elapsed time on every change of the
+   given time signal."
+  ([sig tsig]
+     (elapsed-time :signal sig tsig))
+  ([role sig tsig]
+     (let [ps (p/propagator-set)
+           newsig (ElapsedTime. role sig ps)]
+       (subscribe tsig
+                  (fn [[t-1 t]]
+                    (p/propagate-all! ps [(- t-1 (last-updated sig))
+                                          (-  t (last-updated sig))]))
+                  [newsig])
+       newsig)))
 
 
 (defn time

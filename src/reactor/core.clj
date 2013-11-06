@@ -32,7 +32,8 @@
     "Subscribes a one-argument listener function. The followers seq contains reactives
      that are affected by side-effects that the listener function has.
      In case of an event source the listener fn is invoked with an Occurence instance.
-     In case of a signal the listener fn is invoked with the new value of the signal.")
+     In case of a signal the listener fn is invoked with the a pair [old-value new-value]
+     of the signal.")
   (unsubscribe [react f]
     "Removes the listener fn from the list of followers.")
   (followers [react]
@@ -104,7 +105,7 @@
   (cond
    (satisfies? Signal react)
    (let [newsig (signal :signalpass executor nil)]
-     (subscribe react #(setv! newsig %) [newsig])
+     (subscribe react (fn [[old new]] (setv! newsig new)) [newsig])
      newsig)
    (satisfies? EventSource react)
    (let [newes (eventsource :eventpass executor)]
@@ -206,7 +207,7 @@
   [sig-or-value evtsource]
   (let [sig (as-signal sig-or-value)
         newsig (signal :switch (getv sig))
-        sig-listener #(setv! newsig %)
+        sig-listener (fn [[old new]] (setv! newsig new))
         switcher (fn [{timestamp :timestamp evtsig :event}]
                    {:pre [(instance? reactor.core.Signal evtsig)]}
                    (unsubscribe sig sig-listener)
@@ -249,14 +250,12 @@
 
 
 (defn snapshot
-  "Creates a signal that takes the value of the signal sig whenever
+  "Creates an event source that takes the value of the signal sig whenever
    the given event source raises an event."
-  ([sig evtsource]
-     (snapshot sig nil evtsource))
-  ([sig initial-value evtsource]
-  (let [newsig (signal :snapshot initial-value)]
-    (subscribe evtsource (fn [_] (setv! newsig (getv sig))) [newsig])
-    newsig)))
+  [sig evtsource]
+  (let [newes (eventsource :snapshot)]
+    (subscribe evtsource (fn [_] (raise-event! newes (getv sig))) [newes])
+    newes))
 
 
 (defn react-with
@@ -277,28 +276,23 @@
      (behind 1 sig))
   ([lag sig]
      (let [newsig (lagged-signal lag (getv sig))]
-       (subscribe sig #(setv! newsig %) [newsig])
+       (subscribe sig (fn [[old new]] (setv! newsig new)) [newsig])
        newsig)))
 
 
 (defn changes
   "Creates an event source from a signal so that an event is raised
-   whenever the signal value changes. If the fn-or-val argument
+   whenever the signal value changes. The event is a pair [old-value new-value].
+   If the fn-or-val argument
    evaluates to a function, then it is applied to the signals
    new value. An event is raised when the function returns a non-nil
    result. If fn-or-val is not a function it is assumed to be the
    event that will be raised on signal value change."
   ([sig]
      (changes identity sig))
-  ([fn-or-val sig]
+  ([f sig]
   (let [newes (eventsource :changes)]
-    (subscribe sig
-               (fn [new]
-                 (if-let [evt (if (fn? fn-or-val)
-                                (fn-or-val new)
-                                fn-or-val)]
-                   (raise-event! newes evt)))
-               [newes])
+    (subscribe sig (fn [[old new]] (raise-event! newes [(f old) (f new)])) [newes])
     newes)))
 
 
@@ -368,12 +362,12 @@
    true, otherwise the value of f-sig."
   [cond-sig t-sig f-sig]
   (let [newsig (signal :if nil)
-        switch-fn (fn [b] (setv! newsig (if b (getv t-sig) (getv f-sig))))
-        propagate-fn (fn [x] (setv! newsig (if (getv cond-sig) (getv t-sig) (getv f-sig))))]
+        switch-fn (fn [[old new]] (setv! newsig (if new (getv t-sig) (getv f-sig))))
+        propagate-fn (fn [_] (setv! newsig (if (getv cond-sig) (getv t-sig) (getv f-sig))))]
     (subscribe cond-sig switch-fn [newsig])
     (subscribe t-sig propagate-fn [newsig])
     (subscribe f-sig propagate-fn [newsig])
-    (switch-fn (getv cond-sig))
+    (switch-fn [nil (getv cond-sig)])
     newsig))
 
 
@@ -402,6 +396,9 @@
   (clojure.core/map #(list 'reactor.core/lift %) exprs))
 
 ;; TODO fn, -> ->>
+
+
+
 
 (defmacro lift
   "Marco that takes an expr, lifts it (and all subexpressions) and
@@ -534,7 +531,7 @@
            ps (p/propagator-set)]
        (add-watch a :signal (fn [ctx key old new]
                               (if (not= old new)
-                                (x/schedule executor #(p/propagate-all! ps new)))))
+                                (x/schedule executor #(p/propagate-all! ps [old new])))))
        (DefaultSignal. role a updated ps))))
 
 
@@ -556,7 +553,7 @@
            ps (p/propagator-set)]
        (add-watch r :signal (fn [ctx key old new]
                               (if (not= old new)
-                                (p/propagate-all! ps (first new)))))
+                                (p/propagate-all! ps [(first old) (first new)]))))
        (LaggedSignal. role lag r q-ref ps))))
 
 
@@ -570,7 +567,7 @@
         newsig (Time. :time a executor ps)]
     (add-watch a :signal (fn [ctx key old new]
                            (if (not= old new)
-                             (p/propagate-all! ps new))))
+                             (p/propagate-all! ps [old new]))))
     (start-timer newsig)
     newsig))
 

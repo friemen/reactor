@@ -120,7 +120,7 @@ See also [core.clj](src/reactor/core.clj).
 
 **reduce-t** -- Like reduce, but passes a third argument for elapsed time since last update of the new signal.
 
-**snapshot** -- Creates a signal that takes a value from another signal whenever an event occurs.
+**snapshot** -- Creates an a new event source from an existing event source that takes a value from another signal whenever an event occurs.
 
 **react-with** -- Subscribes a listener function to an event source.
 
@@ -137,7 +137,7 @@ See also [core.clj](src/reactor/core.clj).
 
 **behind** -- Creates a new signal that follows a given signal with a lag.
 
-**changes** -- Creates a new event source from a signal that emits an occurence everytime the value is changed. The new value is taken as event.
+**changes** -- Creates a new event source from a signal that emits an occurence everytime the value is changed. The event is the pair [old-value new value].
 
 **lift*** -- Creates a new signal that applies a function to the values of all signals whenever a value changes. The new signal stores the result of the function application.
 

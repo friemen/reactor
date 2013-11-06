@@ -135,13 +135,12 @@
 
 (deftest reduce-t-test
   (let [speed (r/signal 0)
-        speed-1 (->> speed (r/behind 1))
         ticks (r/eventsource)
         pos (->> (r/merge (->> speed
                                r/changes
-                               (r/map (fn [_] (r/getv speed-1))))
+                               (r/map first))
                           (->> ticks
-                               (r/map (fn [_] (r/getv speed)))))
+                               (r/map second)))
                  (r/reduce-t (fn [pos s elapsed]
                                (+ pos (* (or s 0) elapsed)))
                              0))]
@@ -154,7 +153,7 @@
 (deftest snapshot-test
   (let [e (r/eventsource)
         s1 (r/signal 42)
-        s2 (->> e (r/snapshot s1 13))]
+        s2 (->> e (r/snapshot s1) (r/hold 13))]
     (is (= 13 (r/getv s2)))
     (r/raise-event! e "Foo")
     (is (= 42 (r/getv s2)))))
@@ -162,7 +161,7 @@
 
 ;; tests for combinators on signals
 
-(deftest follow-test
+(deftest behind-test
   (let [s1 (r/signal 0)
         s2 (r/behind 2 s1)]
     (is (= 0 (r/getv s2)))
@@ -175,9 +174,9 @@
 (deftest changes-test
   (let [n (r/signal 0)
         alarm-events (->> n (r/changes #(when (> % 10) "ALARM!")))
-        alarm-signal (->> alarm-events r/hold)]
+        alarm-signal (->> alarm-events (r/map second) r/hold)]
     (r/setv! n 9)
-    (is (= nil (r/getv alarm-signal))) ; not ALARM must be set
+    (is (= nil (r/getv alarm-signal))) ; no ALARM must be set
     (r/setv! n 11)
     (is (= "ALARM!" (r/getv alarm-signal))))) ; check that ALARM is set
 

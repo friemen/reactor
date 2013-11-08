@@ -401,30 +401,26 @@
 ;; TODO add support for fn, -> ->>
 
 (defn- lift-expr
-  ([expr]
-     (lift-expr expr nil))
-  ([expr sym]
+  [expr]
      (if (list? expr)
        (case (first expr)
          let (let [[_ bindings & exprs] expr
                    lifted-bindings (->> bindings
                                         (partition 2)
-                                        (mapcat (fn [[s expr]] [s (list 'reactor.core/lift expr)]))
+                                        (mapcat (fn [[s expr]] [s (lift-expr expr)]))
                                         vec)]
                `(let ~lifted-bindings ~@(lift-exprs exprs)))
          ;; TODO fn (fn fn*) (let [[_ p & exprs] expr] `(signal (fn ~p )))
          if (let [[_ c t f] expr]
-              `(if* (lift ~c)
-                    (lift ~t)
-                    ~(if f `(lift ~f) `(lift nil))))
+              `(if* ~(lift-expr c)
+                    ~(lift-expr t)
+                    ~(if f (lift-expr f) (lift-expr nil))))
          or `(or* ~@(lift-exprs (rest expr)))
          and `(and* ~@(lift-exprs (rest expr)))
-         (if (nil? sym) ; regular function application
-           `(reactor.core/apply ~(first expr) ~@(lift-exprs (rest expr)))
-           `(bind-one! ~(first expr) ~(symbol "<S>") ~@(lift-exprs (rest expr))))) 
+         `(reactor.core/apply ~(first expr) ~@(lift-exprs (rest expr)))) ; regular function application
        (case expr
          <S> (symbol "<S>")
-         `(as-signal ~expr)))))  ;; no list, make sure it's a signal
+         `(as-signal ~expr))))  ;; no list, make sure it's a signal
 
 
 (defmacro lift
@@ -443,7 +439,9 @@
            t (symbol "<T>")]
        `(let [~s (assoc (reactor.core/signal ~initial-value) :no-subscribe true)
               ~@(if tsig `(~t (reactor.core/elapsed-time ~s ~tsig)))]
-          ~(lift-expr expr s))))) 
+          (bind-one! identity ~s ~(lift-expr expr))
+          ~s)))) 
+
 
 
 (defn process-with

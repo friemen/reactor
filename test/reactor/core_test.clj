@@ -281,7 +281,7 @@
       (is (= 0 (r/getv y)))
       (r/setv! s 1)
       (x/wait 160)
-      (is (and (< 150 (r/getv y)) (< (r/getv y) 160))))))
+      (is (and (< 140 (r/getv y)) (< (r/getv y) 170))))))
 
 
 

@@ -39,4 +39,3 @@
   []
   (DefaultPropagatorSet. (atom #{})))
 
-

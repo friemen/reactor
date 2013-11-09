@@ -2,7 +2,8 @@
   "Factories and combinators for FRP style signals and event sources."
   (:refer-clojure :exclude [delay filter merge map reduce time apply])
   (:require [reactor.propagation :as p]
-            [reactor.execution :as x]))
+            [reactor.execution :as x]
+            [clojure.core :as c]))
 
 ;; Concepts:
 ;; An event is something non-continuous that "happens".
@@ -302,7 +303,7 @@
 (defn setvs!
   "Sets each output-signal to the respective value."
   [output-signals values]
-  (doseq [sv (clojure.core/map vector output-signals values)]
+  (doseq [sv (c/map vector output-signals values)]
     (setv! (first sv) (second sv))))
 
 
@@ -327,8 +328,8 @@
    non-seq value."
   [f input-sigs output-sigs]
   (let [calc-outputs (fn []
-                       (let [input-values (clojure.core/map getv input-sigs)
-                             output-values (clojure.core/apply f input-values)]
+                       (let [input-values (c/map getv input-sigs)
+                             output-values (c/apply f input-values)]
                          output-values))
         listener-fn (if (= 1 (count output-sigs))
                       (fn [_] (setv! (first output-sigs) (calc-outputs)))
@@ -343,7 +344,7 @@
 
 (defn bind-one!
   [f newsig & sigs]
-  (bind! f (vec (clojure.core/map as-signal sigs)) [newsig])
+  (bind! f (vec (c/map as-signal sigs)) [newsig])
   newsig)
 
 
@@ -352,7 +353,7 @@
    f to the values of the input signals whenever one value changes."
   [f & sigs]
   (let [newsig (signal :apply 0)]
-    (bind! f (clojure.core/map as-signal sigs) [newsig])
+    (bind! f (c/map as-signal sigs) [newsig])
     newsig))
 
 
@@ -373,7 +374,7 @@
 (defn and*
   "Creates a signal that contains the result of a logical And of all signals values."
   [& sigs]
-  (clojure.core/apply
+  (c/apply
    (partial apply (fn [& xs]
                     (if (every? identity xs)
                       (last xs)
@@ -384,7 +385,7 @@
 (defn or*
   "Creates a signal that contains the result of a logical Or of all signals values."
   [& sigs]
-  (clojure.core/apply
+  (c/apply
    (partial apply (fn [& xs]
                     (if-let [r (some identity xs)]
                       r
@@ -396,7 +397,7 @@
 
 (defn- lift-exprs
   [exprs]
-  (clojure.core/map lift-expr exprs))
+  (c/map lift-expr exprs))
 
 ;; TODO add support for fn, -> ->>
 
@@ -463,7 +464,7 @@
    :unsubscribe (fn [r f]
                   (doseq [p (->> (.ps r)
                                  p/propagators
-                                 (clojure.core/filter #(or (nil? f) (= (:fn %) f))))]
+                                 (c/filter #(or (nil? f) (= (:fn %) f))))]
                     (p/remove! (.ps r) p))
                   r)
    :followers (fn [r]
@@ -577,7 +578,7 @@
            q-ref (ref (if initial-value
                         (->> initial-value
                              (repeat lag)
-                             (clojure.core/map #(vector % (now)))
+                             (c/map #(vector % (now)))
                              vec)
                         []))
            ps (p/propagator-set)]
@@ -626,4 +627,38 @@
      (eventsource role x/current-thread))
   ([role executor]
      (DefaultEventSource. role (p/propagator-set) executor)))
+
+
+;; draft implementation for external propagation
+
+
+(defn heights
+  "Returns a map {reactive->height} for all reactives
+   that are reachable by the given seq of reactives.
+   Links between reactives that create cycles are omitted, so the
+   graph of reachable reactives is treated as a tree.
+   The 'height' of a reactive denotes the length of the longest
+   path to a leaf of this tree. A leaf has height 0.
+   'Reactive t follows reactive s' implicates 'height s > height t'"
+  ([reactives]
+     (heights reactives {}))
+  ([reactives rhm]
+     (loop [rs reactives, m rhm]
+       (if-let [r (first rs)]
+         (if (m r)
+           (recur (rest rs) m)
+           (let [fs (followers r)]
+             (recur (rest rs) (if (empty? fs)
+                                (assoc m r 0)
+                                (let [frhm (heights fs (assoc m r -1))]
+                                  (->> fs
+                                       (c/map frhm)
+                                       (c/apply max)
+                                       inc
+                                       (assoc m r)
+                                       (c/merge frhm)))))))
+         m))))
+
+
+
 

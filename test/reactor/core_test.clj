@@ -332,3 +332,22 @@
     (is (= {:state :idle
             :path [[1 2] [3 4] [5 6]]}
            (r/getv drawing-state)))))
+
+
+;; test of external propagation
+
+(deftest heights-test
+  (let [r (r/signal 2)
+        q (r/signal 1)
+        s (r/lift (+ r q <S>))
+        e (r/changes s)
+        t (r/hold e)]
+    (let [rhm (r/heights [r q])]
+      (is (= 0 (rhm t)))
+      (is (= 1 (rhm e)))
+      (is (= 2 (rhm s)))
+      (is (= 4 (rhm r) (rhm q))))
+    (let [rhm (r/heights [e])]
+      (is (nil? (rhm s)))
+      (is (= 0 (rhm t)))
+      (is (= 1 (rhm e))))))

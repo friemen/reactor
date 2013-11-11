@@ -3,6 +3,17 @@
             [reactor.execution :as x])
   (:use clojure.test))
 
+;; fixture
+
+(defn reset-engine
+  [f]
+  (r/reset-engine!)
+  (alter-var-root #'r/auto-execute (constantly 10))
+  (f)
+  (r/stop-all-timers))
+
+(use-fixtures :each reset-engine)
+
 ;; subscribe / unsubscribe test
 
 (deftest subscription-test
@@ -265,22 +276,25 @@
       (r/setv! n1 4)
       (is (= 28 (r/getv plus10*2)))))
   (testing "Expressions with a reference to the new signal <S>"
-    (let [time (r/signal 0)
-          elapsed (->> time
-                       r/changes
-                       (r/map (fn [[t-1 t]] (- t t-1)))
-                       (r/hold 0))
-          s (r/lift (+ <S> (* elapsed 2)))]
-      (is (= 0 (r/getv s)))
-      (r/setv! time 2)
-      (is (= 4 (r/getv s)))))
-  (testing "Expression with a reference to elapsed time <T>"
+    (binding [r/auto-execute 0]
+      (let [time (r/signal 0)
+            elapsed (->> time
+                         r/changes
+                         (r/map (fn [[t-1 t]] (- t t-1)))
+                         (r/hold 0))
+            s (r/lift (+ <S> (* elapsed 2)))]
+        (is (= 0 (r/getv s)))
+        (r/setv! time 2)
+        (r/execute!)
+        (is (= 4 (r/getv s))))))
+  #_(testing "Expression with a reference to elapsed time <T>"
     (let [time (r/time 20)
           s (r/signal 0)
           y (r/lift 0 time (+ <S> (* s <T>)))]
       (is (= 0 (r/getv y)))
       (r/setv! s 1)
-      (x/wait 160)
+      (x/wait 300)
+      (println (r/getv y))
       (is (and (< 140 (r/getv y)) (< (r/getv y) 170))))))
 
 

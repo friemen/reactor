@@ -3,7 +3,8 @@
   (:refer-clojure :exclude [delay filter merge map reduce time apply])
   (:require [reactor.propagation :as p]
             [reactor.execution :as x]
-            [clojure.core :as c]))
+            [clojure.core :as c]
+            [clojure.data.priority-map :refer [priority-map priority-map-by]]))
 
 ;; Concepts:
 ;; An event is something non-continuous that "happens".
@@ -40,16 +41,18 @@
   (followers [react]
     "Returns reactives that follow this reactive.")
   (role [react]
-    "Returns a keyword denoting the functional role of the reactive."))
+    "Returns a keyword denoting the functional role of the reactive.")
+  (publish! [react x]
+    "Takes over the given value/occurrence x and publishes it to all followers.
+     An event source will propagate the Occurence instance,
+     a signal will propagate a pair [old-value new-value]."))
 
 
 (defprotocol Signal
   (getv [sig]
     "Returns the current value of this signal.")
-  (setv! [sig value]
-    "Sets the value of this signal and returns the value.")
   (last-updated [sig]
-    "Returns the absolute timestamp of the last setv!"))
+    "Returns the absolute timestamp of the last publish!"))
 
 
 (defprotocol EventSource
@@ -57,7 +60,7 @@
     "Sends a new event."))
 
 
-(declare signal lagged-signal time elapsed-time eventsource)
+(declare signal lagged-signal time elapsed-time eventsource setv! engine enqueue!)
 
 ;; time utilities
 
@@ -73,7 +76,7 @@
   "Starts the timer to update the given time signal."
   [tsig]
   (when-not (@timer-signals tsig)
-    (let [update-fn #(reset! (:time-atom tsig) (now))]
+    (let [update-fn #(publish! tsig (now))]
       (update-fn)
       (x/schedule (:executor tsig) update-fn)
       (swap! timer-signals #(conj % tsig)))))
@@ -122,19 +125,7 @@
   [f react]
   (subscribe react f []))
 
-
-
-;; combinators for event sources
-
-(defn hold
-  "Creates a new signal that stores the last event as value."
-  ([evtsource]
-     (hold nil evtsource))
-  ([initial-value evtsource]
-     (let [newsig (signal :hold initial-value)]
-       (subscribe evtsource #(setv! newsig (:event %)) [newsig])
-       newsig)))
-
+(declare hold)
 
 (defn as-signal
   "Returns the given argument, if it is already a signal.
@@ -148,7 +139,18 @@
    sig-or-val
    (satisfies? EventSource sig-or-val)
    (hold sig-or-val)
-   :else (signal sig-or-val)))
+   :else (signal :constantly sig-or-val)))
+
+;; combinators for event sources
+
+(defn hold
+  "Creates a new signal that stores the last event as value."
+  ([evtsource]
+     (hold nil evtsource))
+  ([initial-value evtsource]
+     (let [newsig (signal :hold initial-value)]
+       (subscribe evtsource #(setv! newsig (:event %)) [newsig])
+       newsig)))
 
 
 (defn map
@@ -300,6 +302,13 @@
     newes)))
 
 
+(defn setv!
+  "Sets the value of this signal and returns the value."
+  [sig value]
+  (enqueue! sig value)
+  value)
+
+
 (defn setvs!
   "Sets each output-signal to the respective value."
   [output-signals values]
@@ -330,16 +339,19 @@
   (let [calc-outputs (fn []
                        (let [input-values (c/map getv input-sigs)
                              output-values (c/apply f input-values)]
+                         #_(println "INPUTS" (c/map role input-sigs))
                          output-values))
         listener-fn (if (= 1 (count output-sigs))
                       (fn [_] (setv! (first output-sigs) (calc-outputs)))
                       (fn [_] (some->> (calc-outputs)
                                        as-vector
                                        (setvs! output-sigs))))]
-    (doseq [sig input-sigs :when (nil? (:no-subscribe sig))]
+    (doseq [sig input-sigs]
       (subscribe sig listener-fn output-sigs))
-    (listener-fn nil)) ; initial value sync
-  output-sigs)
+    ; initial value sync
+    (doseq [[s v] (c/map vector output-sigs (as-vector (calc-outputs)))]
+      (publish! s v))
+  output-sigs))
 
 
 (defn bind-one!
@@ -367,7 +379,8 @@
     (subscribe cond-sig switch-fn [newsig])
     (subscribe t-sig propagate-fn [newsig])
     (subscribe f-sig propagate-fn [newsig])
-    (switch-fn [nil (getv cond-sig)])
+    ; initial value sync
+    (publish! newsig (if (getv cond-sig) (getv t-sig) (getv f-sig)))
     newsig))
 
 
@@ -434,11 +447,11 @@
   ([expr]
      `(lift 0 nil ~expr))
   ([initial-value expr]
-     `(lift initial-value nil ~expr))
+     `(lift ~initial-value nil ~expr))
   ([initial-value tsig expr]
      (let [s (symbol "<S>")
            t (symbol "<T>")]
-       `(let [~s (assoc (reactor.core/signal ~initial-value) :no-subscribe true)
+       `(let [~s (reactor.core/signal ~initial-value)
               ~@(if tsig `(~t (reactor.core/elapsed-time ~s ~tsig)))]
           (bind-one! identity ~s ~(lift-expr expr))
           ~s)))) 
@@ -473,64 +486,91 @@
 
 
 
-(defrecord DefaultSignal [role value-atom updated-atom ps]
+(defrecord DefaultSignal [role value-atom updated-atom executor ps]
   Signal
   (getv [_]
     @value-atom)
-  (setv! [_ value]
-    (reset! updated-atom (now))
-    (reset! value-atom value))
   (last-updated [sig]
     @updated-atom))
 
-(extend DefaultSignal Reactive reactive-fns)
+(extend DefaultSignal
+  Reactive
+  (-> reactive-fns
+      (assoc :publish! (fn [sig value]
+                         (let [{updated-atom :updated-atom
+                                value-atom :value-atom
+                                ps :ps
+                                executor :executor} sig
+                               new value
+                               old @value-atom]
+                           (reset! updated-atom (now))
+                           (reset! value-atom value)
+                           (if (not= old new)
+                             (x/schedule executor #(p/propagate-all! ps [old new]))))))))
 
 
-(defrecord LaggedSignal [role lag value-ref q-ref ps]
+(defrecord LaggedSignal [role lag value-ref q-ref executor ps]
   Signal
   (getv [_]
     (first @value-ref))
-  (setv! [_ value]
-    (dosync
-     (let [vs (conj @q-ref [value (now)])]
-       (if (> (count vs) lag)
-        (let [[v & rest] vs]
-          (ref-set value-ref v)
-          (ref-set q-ref (vec rest)))
-        (ref-set q-ref vs))
-       value)))
   (last-updated [sig]
     (second @value-ref)))
 
-(extend LaggedSignal Reactive reactive-fns)
+(extend LaggedSignal
+  Reactive
+  (-> reactive-fns
+      (assoc :publish! (fn [sig value]
+                         (dosync
+                          (let [{lag :lag
+                                 value-ref :value-ref
+                                 q-ref :q-ref
+                                 ps :ps
+                                 executor :executor} sig
+                                 vs (conj @q-ref [value (now)])]
+                            (if (> (count vs) lag)
+                              (let [[new & rest] vs
+                                    old @value-ref]
+                                (ref-set value-ref new)
+                                (ref-set q-ref (vec rest))
+                                (if (not= old new)
+                                  (x/schedule executor #(p/propagate-all! ps [(first old) (first new)]))))
+                              (ref-set q-ref vs))
+                            value))))))
 
 
 (defrecord Time [role time-atom executor ps]
   Signal
   (getv [_]
     @time-atom)
-  (setv! [_ value]
-    (throw (UnsupportedOperationException. "A time signal cannot be set")))
   (last-updated [_]
     @time-atom))
 
-(extend Time Reactive reactive-fns)
+(extend Time
+  Reactive
+  (-> reactive-fns
+      (assoc :publish! (fn [sig value]
+                         (let [{time-atom :time-atom
+                                executor :executor
+                                ps :ps} sig
+                                new value
+                                old @time-atom]
+                           (reset! time-atom value)
+                           (if (not= old new)
+                             (p/propagate-all! ps [old new])))))))
 
-
-;; propagate elapsed time between last update of signal and current
-;; time change
-;; provide elapsed time between last update of signal and now
 
 (defrecord ElapsedTime [role sig ps]
   Signal
   (getv [_]
     (- (now) (last-updated sig)))
-  (setv! [_ value]
-    (throw (UnsupportedOperationException. "A time signal cannot be set")))
   (last-updated [_]
     (now)))
 
-(extend ElapsedTime Reactive reactive-fns)
+(extend ElapsedTime
+  Reactive
+  (-> reactive-fns
+      (assoc :publish! (fn [{ps :ps} value]
+                         (p/propagate-all! ps value)))))
 
 
 (defn- as-occ
@@ -540,12 +580,19 @@
     (Occurence. evt-or-occ (now))))
 
 
-(defrecord DefaultEventSource [role ps executor]
+(defrecord DefaultEventSource [role executor ps]
   EventSource
-  (raise-event! [_ evt]
-    (x/schedule executor #(p/propagate-all! ps (as-occ evt)))))
+  (raise-event! [evtsource evt]
+    (enqueue! evtsource (as-occ evt))
+    evt))
 
-(extend DefaultEventSource Reactive reactive-fns)
+(extend DefaultEventSource
+  Reactive
+  (-> reactive-fns
+      (assoc :publish! (fn [evtsource value]
+                         (let [{executor :executor
+                                ps :ps} evtsource]
+                           (x/schedule executor #(p/propagate-all! ps (as-occ value))))))))
 
 
 ;; factories for signals and event sources
@@ -560,10 +607,7 @@
      (let [a (atom initial-value)
            updated (atom (if initial-value (now) nil))
            ps (p/propagator-set)]
-       (add-watch a :signal (fn [ctx key old new]
-                              (if (not= old new)
-                                (x/schedule executor #(p/propagate-all! ps [old new])))))
-       (DefaultSignal. role a updated ps))))
+       (DefaultSignal. role a updated executor ps))))
 
 
 (defn lagged-signal
@@ -582,10 +626,7 @@
                              vec)
                         []))
            ps (p/propagator-set)]
-       (add-watch r :signal (fn [ctx key old new]
-                              (if (not= old new)
-                                (x/schedule executor #(p/propagate-all! ps [(first old) (first new)])))))
-       (LaggedSignal. role lag r q-ref ps))))
+       (LaggedSignal. role lag r q-ref executor ps))))
 
 
 (defn elapsed-time
@@ -599,8 +640,8 @@
            newsig (ElapsedTime. role sig ps)]
        (subscribe tsig
                   (fn [[t-1 t]]
-                    (p/propagate-all! ps [(- t-1 (last-updated sig))
-                                          (-  t (last-updated sig))]))
+                    (publish! newsig [(- t-1 (last-updated sig))
+                                      (-  t (last-updated sig))]))
                   [newsig])
        newsig)))
 
@@ -612,9 +653,6 @@
         executor (x/timer-executor resolution)
         ps (p/propagator-set)
         newsig (Time. :time a executor ps)]
-    (add-watch a :signal (fn [ctx key old new]
-                           (if (not= old new)
-                             (p/propagate-all! ps [old new]))))
     (start-timer newsig)
     newsig))
 
@@ -626,10 +664,62 @@
   ([role]
      (eventsource role x/current-thread))
   ([role executor]
-     (DefaultEventSource. role (p/propagator-set) executor)))
+     (DefaultEventSource. role executor (p/propagator-set))))
 
 
-;; draft implementation for external propagation
+;; implementation for propagation engine
+
+(defn before
+  "Returns true, if e1 has to be processed before e2. The order of processing depends
+   1. on the height: e1 is before e2 if height e1 > height e2
+   2. on the order of arrival in the queue"
+  [e1 e2]
+  (if (= (:height e1) (:height e2))
+    (< (:no e1) (:no e2))
+    (> (:height e1) (:height e2))))
+
+
+(defn reset-engine!
+  ([]
+     (reset-engine! engine))
+  ([eng-atom]
+     (reset! eng-atom {:next-no 0
+                       :pending-queue []
+                       :execution-queue (priority-map-by (comparator before))
+                       :heights {}
+                       :execution-level nil})))
+
+
+
+(defonce engine (atom nil))
+(reset-engine!)
+(def ^:dynamic auto-execute 10)
+
+
+
+(defn- pr-reactive
+  [react]
+  (if react
+    (if (satisfies? Signal react)
+      (str "S" (role react) "(" (getv react) ")")
+      (str "E" (role react)))
+    nil))
+
+(defn- pr-entry
+  [ent]
+  (update-in ent [:reactive] pr-reactive))
+
+(defn pr-engine
+  ([]
+     (pr-engine @engine))
+  ([eng]
+     (-> eng
+         (update-in [:pending-queue] #(->> % (c/map pr-entry) vec))
+         (update-in [:execution-queue] #(->> % keys (c/map pr-entry) vec))
+         (update-in [:heights] #(->> %
+                                     (c/map (fn [[r h]]
+                                              [(pr-reactive r) h]))
+                                     (into {}))))))
 
 
 (defn heights
@@ -662,3 +752,89 @@
 
 
 
+(defn enqueue
+  "Add the value/occurence x for the reactive either to the execution-queue
+   (if it is active, the reactive is reachable and 'downstream'
+   compared to the current execution-level). Otherwise the entry is added to
+   the pending-queue."
+  [eng react x]
+  #_(println "ENQUEUING" x "FOR" (pr-reactive react))
+  (let [{no :next-no
+         pq :pending-queue
+         exq :execution-queue
+         rhm :heights
+         exl :execution-level} eng
+         h (get rhm react)
+        entry {:no no :height h :reactive react :value x}]
+    (-> (if (or (empty? exq) (nil? h) (<= exl h))
+          (assoc eng :pending-queue (conj pq entry))
+          (assoc eng :execution-queue (conj exq [entry {:no no :height h}])))
+        (assoc :next-no (inc no)))))
+
+
+(defn begin
+  "Takes all entries from pending-queue, calculates the height in
+   the graph of reachable reactives and inserts them into the
+   execution-queue."
+  [eng]
+  (let [es (:pending-queue eng)
+        rhm (heights (c/map :reactive es))
+        exq (->> es
+                 (c/map #(assoc % :height (rhm (:reactive %))))
+                 (c/map #(vector % %))
+                 (into (:execution-queue eng)))]
+    (-> eng
+        (assoc :pending-queue []
+               :execution-queue exq
+               :heights rhm
+               :execution-level (-> exq first first :height)))))
+
+
+(defn step
+  "Removes the first entry from the execution-queue and adapts
+   the execution level."
+  [eng]
+  (let [{exq :execution-queue} eng]
+    (if-let [e (first (peek exq))]
+      (assoc eng :execution-queue (pop exq)
+             :execution-level (:height e))
+      eng)))
+
+(defn execute!
+  "Fills the execution-queue from the pending-queue.
+   Repeats publish! for first entry of the execution-queue as long
+   as the execution-queue is not empty."
+  ([]
+     (execute! engine))
+  ([eng-atom]
+     (loop [eng (swap! eng-atom begin)]
+       (when-let [e (-> eng :execution-queue peek first)]
+         (publish! (:reactive e) (:value e))
+         (recur (swap! eng-atom #(assoc %
+                                   :execution-queue (let [exq (:execution-queue %)]
+                                                      (if (empty? exq) exq (pop exq)))
+                                   :execution-level (:height e))))))
+     (pr-engine @eng-atom)))
+
+
+(defn enqueue!
+  [react x]
+  (let [stopped? (-> @engine :execution-queue empty?)]
+    (swap! engine #(enqueue % react x))
+    (when stopped?
+      (doseq [_ (range auto-execute)]
+        (execute!)))))
+
+
+(comment "To simulate the execution:"
+  (do (reset-engine!)
+		  (def q (signal 3))
+		(def e (changes q))
+		(def r (hold e))
+		(def s (lift 0 (if (< <S> 20) (+ q <S>) 20)))
+		(setv! q 5))
+  "Repeat"
+  (-> (swap! engine begin) pr-engine pprint)
+  (when-let [e (-> engine deref :execution-queue peek first)]
+    (publish! (:reactive e) (:value e)))
+  (-> (swap! engine step) pr-engine pprint))

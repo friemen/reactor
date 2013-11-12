@@ -1,6 +1,6 @@
 (ns reactor.core
   "Factories and combinators for FRP style signals and event sources."
-  (:refer-clojure :exclude [delay filter merge map reduce time apply])
+  (:refer-clojure :exclude [apply delay filter merge map reduce remove time])
   (:require [reactor.propagation :as p]
             [reactor.execution :as x]
             [clojure.core :as c]
@@ -186,6 +186,13 @@
     newes))
 
 
+(defn remove
+  "Creates a new event source that suppresses forwarding of
+   an event when the predicate returns true for the original event."
+  [pred evtsource]
+  (filter (complement pred) evtsource))
+
+
 (defn delay
   "Creates an event source that receives occurences delayed by
    msecs milliseconds from the given event source."
@@ -366,7 +373,7 @@
 (defn apply
   "Creates a signal that is updated by applying the n-ary function
    f to the values of the input signals whenever one value changes."
-  [f & sigs]
+  [f sigs]
   (let [newsig (signal :apply 0)]
     (bind! f (c/map as-signal sigs) [newsig])
     newsig))
@@ -390,30 +397,26 @@
 (defn and*
   "Creates a signal that contains the result of a logical And of all signals values."
   [& sigs]
-  (c/apply
-   (partial apply (fn [& xs]
-                    (if (every? identity xs)
-                      (last xs)
-                      false)))
-   sigs))
+  (apply (fn [& xs]
+            (if (every? identity xs)
+              (last xs)
+              false)) sigs))
 
 
 (defn or*
   "Creates a signal that contains the result of a logical Or of all signals values."
   [& sigs]
-  (c/apply
-   (partial apply (fn [& xs]
+  (apply (fn [& xs]
                     (if-let [r (some identity xs)]
                       r
-                      false)))
-   sigs))
+                      false)) sigs))
 
 
 (declare lift-expr)
 
 (defn- lift-exprs
   [exprs]
-  (c/map lift-expr exprs))
+  (vec (c/map lift-expr exprs)))
 
 ;; TODO add support for fn, -> ->>
 
@@ -434,7 +437,7 @@
                     ~(if f (lift-expr f) (lift-expr nil))))
          or `(or* ~@(lift-exprs (rest expr)))
          and `(and* ~@(lift-exprs (rest expr)))
-         `(reactor.core/apply ~(first expr) ~@(lift-exprs (rest expr)))) ; regular function application
+         `(reactor.core/apply ~(first expr) ~(lift-exprs (rest expr)))) ; regular function application
        (case expr
          <S> (symbol "<S>")
          `(as-signal ~expr))))  ;; no list, make sure it's a signal

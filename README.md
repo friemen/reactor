@@ -80,17 +80,44 @@ Further examples:
 [Swing animation example](src/reactor/swing_sample.clj).
 
 
-API
----
+Current state
+-------------
+This library is currently purely experimental stuff.
+The goal for now is to produce an API that supports the formulation of FRP-based solutions.
+
+- There already is a rich set of **combinators** on signals and event sources.
+
+- Signals can be created by **expression lifting** that works for basic language elements like function application, let and if.
+
+- The propagation is handled by an **execution engine** that processes *propagation entries* 
+in the topological order of the reactive network, which avoids inconsistencies and allows 
+cyclic dependencies among reactives.
+
+- The dependencies among reactives form an explicit graph. Updates are made via a push-based approach.
+
+- Event and signal processing can be **passed across threads** and therefore allows for chains
+with asynchronity.
+
+Second step is to provide some more elaborate samples that demonstrate how non-trivial
+applications like GUI, message processing, animation or games would be described with FRP.
+
+
+API Overview
+------------
 See also [core.clj](src/reactor/core.clj).
+
+### Default Reactives
+
+**time** -- A signal that is regularly updated and always returns the current epoch time in milliseconds.
+
+**exceptions** -- An event source that all caught exceptions are directed to.
+
 
 ### Factories
 
 **signal** -- Creates a new signal with the given initial value.
 
 **eventsource** -- Creates a new event source.
-
-**time** -- Creates a signal that holds the current time in milliseconds.
 
 
 ### Functions applying to Signals as well as Event Sources
@@ -108,7 +135,9 @@ See also [core.clj](src/reactor/core.clj).
 
 **map** -- Creates a new event sources that transforms every event.
 
-**filter** -- Creates a new event source that applies a predicate to decide whether an occurence is propagated. 
+**filter** -- Creates a new event source that propagates event if predicate on event returns true. 
+
+**remove** -- Creates a new event source that omits event if predicate on event returns true. 
 
 **delay** -- Creates a new event source that propagates occurences from a given event source with a delay.
 
@@ -128,6 +157,8 @@ See also [core.clj](src/reactor/core.clj).
 ### Functions applying to Signals
 
 **as-signal** -- Takes an arbitraty value. If it's a signal, returns it unchanged. If it's an event source returns a new signal that holds the last event. Otherwise returns a new signal with the given value.
+
+**elapsed-time** -- Creates a signal that holds the elapsed time between now and the last update of a signal.
 
 **setv!** -- Sets the value of one signal. If the old value and the new value are different the value is propagated to followers of the signal.
 
@@ -149,22 +180,19 @@ See also [core.clj](src/reactor/core.clj).
 
 **stop-timer** -- Stop the timer executor associated with a time signal.
 
-       
-Current state
--------------
-This library is currently purely experimental stuff.
-The goal for now is to produce an API that supports the formulation of FRP-based solutions.
-Second step is to provide some more elaborate samples that demonstrate how non-trivial
-applications like GUI, message processing, animation or games would be described with FRP.
-If those samples provide evidence that FRP really simplifies the program code in certain 
-areas, the implementation "under the hood" would be improved.
 
-The current implementation is simple, it is just enough to make the API working.
-It uses atoms for signal values. The dependencies among reactives form an explicit graph.
-Updates are made via a push-based approach, but there is no avoidance of inconsistencies 
-(a.k.a glitches).
-Event and signal processing can be passed across threads and therefore allows for chains
-with asynchronity.
+### Functions for controlling execution 
+
+By default the engine is NOT started, but works in an auto execute mode which is helpful
+for unit tests and in the REPL.
+
+**start-engine!** -- Starts execution loop with the specified delay.
+
+**stop-engine!** -- Stops execution loop.
+
+**reset-engine!** -- Removes all queued propagation entries from the engine.
+
+       
 
 References
 ----------

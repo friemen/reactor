@@ -212,8 +212,8 @@
 (deftest apply-test
   (let [n1 (r/signal 0)
         n2 (r/signal 0)
-        n1half (r/apply / n1 2) ; always contains the half of n1's value 
-        sum (r/apply + n1 n2) ; always contains the sum of n1 and n2
+        n1half (r/apply / [n1 2]) ; always contains the half of n1's value 
+        sum (r/apply + [n1 n2]) ; always contains the sum of n1 and n2
         sum>10 (->> sum
                     (r/changes #(when (> % 10) "ALARM!"))
                     (r/react-with #(println %)))]

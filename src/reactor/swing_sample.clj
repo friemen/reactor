@@ -83,13 +83,13 @@
    (pulsing-rectangle t mpos)])
 
 (defn start-animation []
-  (let [time (r/time 50)
-        mouseevents (r/eventsource)
+  (r/start-engine! 50)
+  (let [mouseevents (r/eventsource)
         clickpos (->> mouseevents
                       (r/filter #(= (:trigger %) :clicked))
                       (r/map #((juxt :x :y) %))
                       (r/hold [150 100]))
-        shapes (r/lift (create-shapes time clickpos))
+        shapes (r/lift (create-shapes r/time clickpos))
         panel (shape-panel shapes)
         f (frame "Hello FRP World" panel)]
     (connect-mouse! panel mouseevents)

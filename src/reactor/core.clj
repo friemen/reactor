@@ -19,12 +19,8 @@
 ;; 
 ;; A follower is a function or reactive that is affected by events or value changes.
 
-; TODO
-; how should errors be handled?
-; events should be propagated through a toplogically sorted graph
 
-
-
+;; -----------------------------------------------------------------------------
 ;; types
 
 (defrecord Occurence [event timestamp])
@@ -60,8 +56,10 @@
     "Sends a new event."))
 
 
-(declare signal lagged-signal time elapsed-time eventsource setv! engine enqueue!)
+(declare signal lagged-signal time elapsed-time exceptions eventsource setv! enqueue!)
 
+
+;; -----------------------------------------------------------------------------
 ;; time utilities
 
 (defn now
@@ -99,6 +97,7 @@
 
 
 
+;; -----------------------------------------------------------------------------
 ;; common functions for reactives (signals and event sources)
 
 (defn pass
@@ -141,6 +140,8 @@
    (hold sig-or-val)
    :else (signal :constantly sig-or-val)))
 
+
+;; -----------------------------------------------------------------------------
 ;; combinators for event sources
 
 (defn hold
@@ -272,6 +273,7 @@
 
 
 
+;; -----------------------------------------------------------------------------
 ;; combinators for signals
 
 
@@ -316,6 +318,7 @@
     (setv! (first sv) (second sv))))
 
 
+;; -----------------------------------------------------------------------------
 ;; binding of signals, lifting of functions and expressions
 
 
@@ -445,14 +448,12 @@
    subset of Clojure forms:
       if, or, and, let"
   ([expr]
-     `(lift 0 nil ~expr))
+     `(lift 0 ~expr))
   ([initial-value expr]
-     `(lift ~initial-value nil ~expr))
-  ([initial-value tsig expr]
      (let [s (symbol "<S>")
            t (symbol "<T>")]
        `(let [~s (reactor.core/signal ~initial-value)
-              ~@(if tsig `(~t (reactor.core/elapsed-time ~s ~tsig)))]
+              ~t (reactor.core/elapsed-time ~s)]
           (bind-one! identity ~s ~(lift-expr expr))
           ~s)))) 
 
@@ -538,7 +539,7 @@
                             value))))))
 
 
-(defrecord Time [role time-atom executor ps]
+(defrecord Time [role time-atom ps]
   Signal
   (getv [_]
     @time-atom)
@@ -550,7 +551,6 @@
   (-> reactive-fns
       (assoc :publish! (fn [sig value]
                          (let [{time-atom :time-atom
-                                executor :executor
                                 ps :ps} sig
                                 new value
                                 old @time-atom]
@@ -595,6 +595,7 @@
                            (x/schedule executor #(p/propagate-all! ps (as-occ value))))))))
 
 
+;; -----------------------------------------------------------------------------
 ;; factories for signals and event sources
 
 (defn signal
@@ -633,28 +634,18 @@
   "Returns a new signal that keeps the elapsed time of the last update of
    the given signal, and propagates the elapsed time on every change of the
    given time signal."
-  ([sig tsig]
-     (elapsed-time :signal sig tsig))
-  ([role sig tsig]
+  ([sig]
+     (elapsed-time :signal sig))
+  ([role sig]
      (let [ps (p/propagator-set)
            newsig (ElapsedTime. role sig ps)]
-       (subscribe tsig
+       (subscribe time
                   (fn [[t-1 t]]
+                    #_(println (last-updated sig) (- t (last-updated sig)))
                     (publish! newsig [(- t-1 (last-updated sig))
                                       (-  t (last-updated sig))]))
                   [newsig])
        newsig)))
-
-
-(defn time
-  "Creates time signal that updates its value every resolution ms."
-  [resolution]
-  (let [a (atom (now))
-        executor (x/timer-executor resolution)
-        ps (p/propagator-set)
-        newsig (Time. :time a executor ps)]
-    (start-timer newsig)
-    newsig))
 
 
 (defn eventsource
@@ -667,33 +658,21 @@
      (DefaultEventSource. role executor (p/propagator-set))))
 
 
+;; -----------------------------------------------------------------------------
+;; default reactives
+
+(def time (Time. :time (atom (now)) (p/propagator-set)))
+(def exceptions (eventsource))
+#_(->> exceptions (react-with #(println %)))
+
+;; -----------------------------------------------------------------------------
 ;; implementation for propagation engine
 
-(defn before
-  "Returns true, if e1 has to be processed before e2. The order of processing depends
-   1. on the height: e1 is before e2 if height e1 > height e2
-   2. on the order of arrival in the queue"
-  [e1 e2]
-  (if (= (:height e1) (:height e2))
-    (< (:no e1) (:no e2))
-    (> (:height e1) (:height e2))))
-
-
-(defn reset-engine!
-  ([]
-     (reset-engine! engine))
-  ([eng-atom]
-     (reset! eng-atom {:next-no 0
-                       :pending-queue []
-                       :execution-queue (priority-map-by (comparator before))
-                       :heights {}
-                       :execution-level nil})))
-
-
+(declare execute!)
 
 (defonce engine (atom nil))
-(reset-engine!)
 (def ^:dynamic auto-execute 10)
+(defonce executor (atom nil))
 
 
 
@@ -722,6 +701,55 @@
                                      (into {}))))))
 
 
+
+(defn- before
+  "Returns true, if e1 has to be processed before e2. The order of processing depends
+   1. on the height: e1 is before e2 if height e1 > height e2
+   2. on the order of arrival in the queue"
+  [e1 e2]
+  (if (= (:height e1) (:height e2))
+    (< (:no e1) (:no e2))
+    (> (:height e1) (:height e2))))
+
+
+(defn reset-engine!
+  ([]
+     (reset-engine! engine))
+  ([eng-atom]
+     (reset! eng-atom {:next-no 0
+                       :pending-queue []
+                       :execution-queue (priority-map-by (comparator before))
+                       :heights {}
+                       :execution-level Integer/MAX_VALUE})))
+
+(reset-engine!)
+
+
+(defn start-engine!
+  ([]
+     (start-engine! engine 500))
+  ([resolution]
+     (start-engine! engine resolution))
+  ([eng-atom resolution]
+     (alter-var-root #'auto-execute (constantly 0))
+     (when-not @executor
+       (reset! executor (x/timer-executor resolution)))
+     (x/cancel @executor)
+     (x/schedule @executor #(try (do (publish! time (now))
+                                     (execute! eng-atom))
+                                 (catch Exception ex (raise-event! exceptions ex))))
+     (pr-engine @eng-atom)))
+
+
+(defn stop-engine!
+  ([]
+     (stop-engine! engine))
+  ([eng-atom]
+     (when @executor
+       (x/cancel @executor)
+       (reset! executor nil))))
+
+
 (defn heights
   "Returns a map {reactive->height} for all reactives
    that are reachable by the given seq of reactives.
@@ -748,8 +776,6 @@
                                        (assoc m r)
                                        (c/merge frhm)))))))
          m))))
-
-
 
 
 (defn enqueue
@@ -782,23 +808,25 @@
         exq (->> es
                  (c/map #(assoc % :height (rhm (:reactive %))))
                  (c/map #(vector % %))
-                 (into (:execution-queue eng)))]
+                 (into (:execution-queue eng)))
+        exl (or (-> exq peek first :height) Integer/MAX_VALUE)]
     (-> eng
         (assoc :pending-queue []
                :execution-queue exq
                :heights rhm
-               :execution-level (-> exq first first :height)))))
+               :execution-level exl))))
 
 
-(defn step
+(defn update
   "Removes the first entry from the execution-queue and adapts
    the execution level."
   [eng]
-  (let [{exq :execution-queue} eng]
-    (if-let [e (first (peek exq))]
-      (assoc eng :execution-queue (pop exq)
-             :execution-level (:height e))
-      eng)))
+  (let [exq (:execution-queue eng)
+        exl (or (-> exq peek first :height) Integer/MAX_VALUE)]
+    (assoc eng
+      :execution-queue (if (empty? exq) exq (pop exq))
+      :execution-level exl)))
+
 
 (defn execute!
   "Fills the execution-queue from the pending-queue.
@@ -810,10 +838,7 @@
      (loop [eng (swap! eng-atom begin)]
        (when-let [e (-> eng :execution-queue peek first)]
          (publish! (:reactive e) (:value e))
-         (recur (swap! eng-atom #(assoc %
-                                   :execution-queue (let [exq (:execution-queue %)]
-                                                      (if (empty? exq) exq (pop exq)))
-                                   :execution-level (:height e))))))
+         (recur (swap! eng-atom update))))
      (pr-engine @eng-atom)))
 
 
@@ -821,20 +846,10 @@
   [react x]
   (let [stopped? (-> @engine :execution-queue empty?)]
     (swap! engine #(enqueue % react x))
-    (when stopped?
+    (when (and stopped? (nil? @executor))
       (doseq [_ (range auto-execute)]
+        #_(println "DO EXECUTE!" auto-execute)
         (execute!)))))
 
 
-(comment "To simulate the execution:"
-  (do (reset-engine!)
-		  (def q (signal 3))
-		(def e (changes q))
-		(def r (hold e))
-		(def s (lift 0 (if (< <S> 20) (+ q <S>) 20)))
-		(setv! q 5))
-  "Repeat"
-  (-> (swap! engine begin) pr-engine pprint)
-  (when-let [e (-> engine deref :execution-queue peek first)]
-    (publish! (:reactive e) (:value e)))
-  (-> (swap! engine step) pr-engine pprint))
+

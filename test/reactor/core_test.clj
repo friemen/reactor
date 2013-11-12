@@ -287,15 +287,16 @@
         (r/setv! time 2)
         (r/execute!)
         (is (= 4 (r/getv s))))))
-  #_(testing "Expression with a reference to elapsed time <T>"
-    (let [time (r/time 20)
-          s (r/signal 0)
-          y (r/lift 0 time (+ <S> (* s <T>)))]
+  (testing "Expression with a reference to elapsed time <T>"
+    (r/start-engine! 40)
+    (let [s (r/signal 0)
+          y (r/lift 0 (+ <S> (* s <T>)))]
       (is (= 0 (r/getv y)))
       (r/setv! s 1)
-      (x/wait 300)
-      (println (r/getv y))
-      (is (and (< 140 (r/getv y)) (< (r/getv y) 170))))))
+      (x/wait 150)
+      (r/stop-engine!)
+      #_(println (r/getv y))
+      (is (and (< 100 (r/getv y)) (< (r/getv y) 170))))))
 
 
 

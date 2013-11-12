@@ -87,13 +87,15 @@ The goal for now is to produce an API that supports the formulation of FRP-based
 
 - There already is a rich set of **combinators** on signals and event sources.
 
-- Signals can be created by **expression lifting** that works for basic language elements like function application, let and if.
+- Signals can be created by **expression lifting** that works for basic language elements 
+like function application, let and if.
 
-- The propagation is handled by an **execution engine** that processes *propagation entries* 
-in the topological order of the reactive network, which avoids inconsistencies and allows 
-cyclic dependencies among reactives.
+- The dependencies among reactives form an **explicit graph**. Updates are made via a 
+push-based approach.
 
-- The dependencies among reactives form an explicit graph. Updates are made via a push-based approach.
+- The propagation of updates is handled by an **execution engine** that processes
+*update entries*  in the topological order of the reactive network, which avoids 
+inconsistencies and allows cyclic dependencies among reactives.
 
 - Event and signal processing can be **passed across threads** and therefore allows for chains
 with asynchronity.
@@ -151,7 +153,7 @@ See also [core.clj](src/reactor/core.clj).
 
 **reduce-t** -- Like reduce, but passes a third argument for elapsed time since last update of the new signal.
 
-**snapshot** -- Creates an a new event source from an existing event source that takes a value from another signal whenever an event occurs.
+**snapshot** -- Creates a new event source from an existing event source that takes a value from another signal whenever an event occurs.
 
 
 ### Functions applying to Signals

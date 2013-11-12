@@ -9,8 +9,7 @@
   [f]
   (r/reset-engine!)
   (alter-var-root #'r/auto-execute (constantly 10))
-  (f)
-  (r/stop-all-timers))
+  (f))
 
 (use-fixtures :each reset-engine)
 

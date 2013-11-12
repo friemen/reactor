@@ -13,9 +13,9 @@ like filter, map or merge).
 Concepts
 --------
 
-An *event* is something non-continuous that "happens".
+An *event* is something non-continuous that "happens", represented by a value.
 
-An *occurence* is a pair [event timestamp].
+An *occurence* contains event and timestamp.
 
 An *event source* publishes occurences to subscribers. 
 
@@ -177,8 +177,6 @@ See also [core.clj](src/reactor/core.clj).
 **bind!** -- Connects input with output signals. On every value change a function is applied to current input values. The resulting values are set as value to the output signals.
 
 **process-with** -- Subscribes a listener function to a signal that is invoked upon value changes.
-
-**stop-timer** -- Stop the timer executor associated with a time signal.
 
 
 ### Functions for controlling execution 

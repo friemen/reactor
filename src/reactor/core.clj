@@ -68,35 +68,6 @@
   (System/currentTimeMillis))
 
 
-(defonce ^:private timer-signals (atom #{}))
-
-(defn start-timer
-  "Starts the timer to update the given time signal."
-  [tsig]
-  (when-not (@timer-signals tsig)
-    (let [update-fn #(publish! tsig (now))]
-      (update-fn)
-      (x/schedule (:executor tsig) update-fn)
-      (swap! timer-signals #(conj % tsig)))))
-
-
-(defn stop-timer
-  "Stops the time signal from being updated."
-  [tsig]
-  (-> tsig :executor x/cancel)
-  (swap! timer-signals #(disj % tsig)))
-
-
-(defn stop-all-timers
-  "Stops all time signals at once."
-  []
-  (doseq [t @timer-signals]
-    (-> t :executor x/cancel))
-  (reset! timer-signals #{}))
-
-
-
-
 ;; -----------------------------------------------------------------------------
 ;; common functions for reactives (signals and event sources)
 

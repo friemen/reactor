@@ -87,14 +87,14 @@
 
 (deftest delay-test
   (let [e1 (r/eventsource)
-        s (->> e1 (r/delay 50) r/hold)]
+        s (->> e1 (r/delay 1000) r/hold)]
     (r/raise-event! e1 "Bar")
-    (x/wait 10)
+    (x/wait 200)
     (is (= nil (r/getv s)))
     (r/raise-event! e1 "Foo")
-    (x/wait 40)
+    (x/wait 900)
     (is (= "Bar" (r/getv s)))
-    (x/wait 50)
+    (x/wait 200)
     (is (= "Foo" (r/getv s)))))
 
 

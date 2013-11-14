@@ -296,6 +296,11 @@
     (setv! (first sv) (second sv))))
 
 
+(defn as-val
+  "Returns x if x is not a signal, otherwise returns (getv x)"
+  [x]
+  (if (satisfies? Signal) (getv x) x))
+
 ;; -----------------------------------------------------------------------------
 ;; binding of signals, lifting of functions and expressions
 
@@ -320,7 +325,7 @@
   (let [calc-outputs (fn []
                        (let [input-values (c/map getv input-sigs)
                              output-values (c/apply f input-values)]
-                         #_(println "INPUTS" (c/map role input-sigs))
+                         #_(println input-values "->" output-values)
                          output-values))
         listener-fn (if (= 1 (count output-sigs))
                       (fn [_] (setv! (first output-sigs) (calc-outputs)))
@@ -330,7 +335,9 @@
     (doseq [sig input-sigs]
       (subscribe sig listener-fn output-sigs))
     ; initial value sync
-    (doseq [[s v] (c/map vector output-sigs (as-vector (calc-outputs)))]
+    (doseq [[s v] (c/map vector output-sigs (if (= 1 (count output-sigs))
+                                              (vector (calc-outputs))
+                                              (calc-outputs)))]
       (publish! s v))
   output-sigs))
 
@@ -424,10 +431,8 @@
   ([expr]
      `(lift 0 ~expr))
   ([initial-value expr]
-     (let [s (symbol "<S>")
-           t (symbol "<T>")]
-       `(let [~s (reactor.core/signal ~initial-value)
-              ~t (reactor.core/elapsed-time ~s)]
+     (let [s (symbol "<S>")]
+       `(let [~s (reactor.core/signal ~initial-value)]
           (bind-one! identity ~s ~(lift-expr expr))
           ~s)))) 
 
@@ -636,6 +641,7 @@
 ;; default reactives
 
 (def time (Time. :time (atom (now)) (p/propagator-set)))
+(def etime (signal 0))
 (def exceptions (eventsource))
 #_(->> exceptions (react-with #(println %)))
 
@@ -650,7 +656,7 @@
 
 
 
-(defn- pr-reactive
+(defn pr-reactive
   [react]
   (if react
     (if (satisfies? Signal react)
@@ -686,42 +692,43 @@
     (> (:height e1) (:height e2))))
 
 
+
 (defn reset-engine!
-  ([]
-     (reset-engine! engine))
-  ([eng-atom]
-     (reset! eng-atom {:next-no 0
-                       :pending-queue []
-                       :execution-queue (priority-map-by (comparator before))
-                       :heights {}
-                       :execution-level Integer/MAX_VALUE})))
+  "Removes all update entries from the engine and resets all counters."
+  []
+  (reset! engine {:next-no 0
+                  :cycles 0
+                  :pending-queue []
+                  :execution-queue (priority-map-by (comparator before))
+                  :heights {}
+                  :execution-level Integer/MAX_VALUE}))
 
 (reset-engine!)
 
 
+(defn stop-engine!
+  "Stops the timer executor which stops the scheduled engine execution."
+  []
+  (when @executor
+       (x/cancel @executor)
+       (reset! executor nil)))
+
+
 (defn start-engine!
+  "Start the engine for scheduled execution with the given resolution
+   as delay between execution cycles.
+   Sets var auto-execute to 0 which inhibits any implicit propagation
+   after enqueue."
   ([]
-     (start-engine! engine 500))
+     (start-engine! 40))
   ([resolution]
-     (start-engine! engine resolution))
-  ([eng-atom resolution]
      (alter-var-root #'auto-execute (constantly 0))
+     (stop-engine!)
      (when-not @executor
        (reset! executor (x/timer-executor resolution)))
      (x/cancel @executor)
-     (x/schedule @executor #(try (do (publish! time (now))
-                                     (execute! eng-atom))
-                                 (catch Exception ex (raise-event! exceptions ex))))
-     (pr-engine @eng-atom)))
-
-
-(defn stop-engine!
-  ([]
-     (stop-engine! engine))
-  ([eng-atom]
-     (when @executor
-       (x/cancel @executor)
-       (reset! executor nil))))
+     (x/schedule @executor execute!)
+     (pr-engine @engine)))
 
 
 (defn heights
@@ -802,28 +809,39 @@
       :execution-level exl)))
 
 
-(defn execute!
+(defn propagate!
   "Fills the execution-queue from the pending-queue.
    Repeats publish! for first entry of the execution-queue as long
    as the execution-queue is not empty."
-  ([]
-     (execute! engine))
-  ([eng-atom]
-     (loop [eng (swap! eng-atom begin)]
-       (when-let [e (-> eng :execution-queue peek first)]
-         (publish! (:reactive e) (:value e))
-         (recur (swap! eng-atom update))))
-     (pr-engine @eng-atom)))
+  []
+  (loop [eng (swap! engine begin)]
+    (when-let [e (-> eng :execution-queue peek first)]
+      (publish! (:reactive e) (:value e))
+      (recur (swap! engine update)))))
+
+
+(defn execute!
+  "Publishes new time values and calls propagate!, handles errors
+   by sending them to the exceptions event source."
+  []
+  (try (do (publish! etime (/ (- (now) (getv time)) 1000))
+           (publish! time (now))
+           (propagate!))
+       (catch Exception ex (raise-event! exceptions ex)))  
+  (pr-engine (swap! engine update-in [:cycles] inc)))
 
 
 (defn enqueue!
+  "Adds an update entry for the given reactive and value x
+   to either the execution queue or the pending queue.
+   The var auto-execute specifies the number of automatic
+   propagations (useful for REPL usage and unit tests)."
   [react x]
   (let [stopped? (-> @engine :execution-queue empty?)]
     (swap! engine #(enqueue % react x))
     (when (and stopped? (nil? @executor))
       (doseq [_ (range auto-execute)]
-        #_(println "DO EXECUTE!" auto-execute)
-        (execute!)))))
+        (propagate!)))))
 
 
 

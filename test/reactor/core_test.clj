@@ -286,10 +286,10 @@
         (r/setv! time 2)
         (r/execute!)
         (is (= 4 (r/getv s))))))
-  (testing "Expression with a reference to elapsed time <T>"
+  (testing "Expression with a reference to elapsed time r/etime"
     (r/start-engine! 40)
     (let [s (r/signal 0)
-          y (r/lift 0 (+ <S> (* s <T>)))]
+          y (r/lift 0 (+ <S> (* s r/etime 1000)))]
       (is (= 0 (r/getv y)))
       (r/setv! s 1)
       (x/wait 150)

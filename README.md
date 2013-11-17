@@ -176,7 +176,7 @@ See also [core.clj](src/reactor/core.clj).
 
 **lift** -- Macro that takes a sexp, lifts it (and all subexpressions) and returns a signal that changes whenever a value of the signals of the sexp changes.
 
-**bind!** -- Connects input with output signals. On every value change a function is applied to current input values. The resulting values are set as value to the output signals.
+**bind!** -- Connects input signals with one output signal. On every value change a function is applied to current input values. The resulting value is set as value to the output signal.
 
 **process-with** -- Subscribes a listener function to a signal that is invoked upon value changes.
 

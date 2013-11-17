@@ -10,10 +10,8 @@
 
 
 (deftest propagator-test
-  (is (= #{t1 t2}
-         (:targets (propagator identity [t1 t2]))))
-  (is (= #{t1}
-         (:targets (propagator identity [t1 t1])))))
+  (is (= t1
+         (:target (propagator identity t1)))))
 
 (deftest propagate-test
   (is (= [3/2 6]

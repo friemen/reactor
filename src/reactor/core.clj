@@ -26,14 +26,14 @@
 (defrecord Occurence [event timestamp])
 
 (defprotocol Reactive
-  (subscribe [react f followers]
-    "Subscribes a one-argument listener function. The followers seq contains reactives
-     that are affected by side-effects that the listener function has.
+  (subscribe [react follower f]
+    "Subscribes a one-argument listener function. The follower is a reactive
+     that is affected by side-effects that the listener function has.
      In case of an event source the listener fn is invoked with an Occurence instance.
      In case of a signal the listener fn is invoked with the a pair [old-value new-value]
      of the signal.")
-  (unsubscribe [react f]
-    "Removes the listener fn from the list of followers.")
+  (unsubscribe [react follower]
+    "Removes the follower and its listener fn from the list of followers.")
   (followers [react]
     "Returns reactives that follow this reactive.")
   (role [react]
@@ -79,11 +79,11 @@
   (cond
    (satisfies? Signal react)
    (let [newsig (signal :signalpass executor nil)]
-     (subscribe react (fn [[old new]] (setv! newsig new)) [newsig])
+     (subscribe react newsig (fn [[old new]] (setv! newsig new)))
      newsig)
    (satisfies? EventSource react)
    (let [newes (eventsource :eventpass executor)]
-     (subscribe react #(raise-event! newes %) [newes])
+     (subscribe react newes #(raise-event! newes %))
      newes)))
 
 
@@ -93,7 +93,7 @@
    In case of a signal the function f receives a pair [old-value new-value] as argument.
    Any return value of f is discarded."
   [f react]
-  (subscribe react f []))
+  (subscribe react nil f))
 
 (declare hold)
 
@@ -121,7 +121,7 @@
      (hold nil evtsource))
   ([initial-value evtsource]
      (let [newsig (signal :hold initial-value)]
-       (subscribe evtsource #(setv! newsig (:event %)) [newsig])
+       (subscribe evtsource newsig #(setv! newsig (:event %)))
        newsig)))
 
 
@@ -136,13 +136,13 @@
   [transform-fn-or-value evtsource]
   (let [newes (eventsource :map)]
     (subscribe evtsource
+               newes
                #(raise-event!
                  newes
                  (Occurence. (if (fn? transform-fn-or-value)
                                (transform-fn-or-value (:event %))
                                transform-fn-or-value)
-                             (:timestamp %)))
-               [newes])
+                             (:timestamp %))))
     newes))
 
 
@@ -151,9 +151,8 @@
    when the predicate returns true for the original event."
   [pred evtsource]
   (let [newes (eventsource :filter)]
-    (subscribe evtsource #(when (pred (:event %))
-                              (raise-event! newes %))
-               [newes])
+    (subscribe evtsource newes #(when (pred (:event %))
+                                  (raise-event! newes %)))
     newes))
 
 
@@ -188,7 +187,7 @@
   [& evtsources]
   (let [newes (eventsource :merge)]
     (doseq [es evtsources]
-      (subscribe es #(raise-event! newes %) [newes]))
+      (subscribe es newes #(raise-event! newes %)))
     newes))
 
 
@@ -202,11 +201,11 @@
         sig-listener (fn [[old new]] (setv! newsig new))
         switcher (fn [{timestamp :timestamp evtsig :event}]
                    {:pre [(instance? reactor.core.Signal evtsig)]}
-                   (unsubscribe sig sig-listener)
-                   (subscribe evtsig sig-listener [newsig])
+                   (unsubscribe sig newsig)
+                   (subscribe evtsig newsig sig-listener)
                    (setv! newsig (getv evtsig)))]
-    (subscribe sig sig-listener [newsig])
-    (subscribe evtsource switcher [newsig])
+    (subscribe sig newsig sig-listener)
+    (subscribe evtsource newsig switcher)
     newsig))
 
 
@@ -220,11 +219,11 @@
   ([f initial-value evtsource]
      (let [newsig (signal :reduce-t initial-value)]
        (subscribe evtsource
+                  newsig
                   #(setv! newsig (f (getv newsig)
                                     (:event %)
                                     (- (:timestamp %)
-                                       (or (last-updated newsig) (:timestamp %)))))
-                  [newsig])
+                                       (or (last-updated newsig) (:timestamp %))))))
        newsig)))
 
 
@@ -237,7 +236,7 @@
      (reduce f nil))
   ([f initial-value evtsource]
      (let [newsig (signal :reduce initial-value)]
-       (subscribe evtsource #(setv! newsig (f (getv newsig) (:event %))) [newsig])
+       (subscribe evtsource newsig #(setv! newsig (f (getv newsig) (:event %))))
        newsig)))
 
 
@@ -246,7 +245,7 @@
    the given event source raises an event."
   [sig evtsource]
   (let [newes (eventsource :snapshot)]
-    (subscribe evtsource (fn [_] (raise-event! newes (getv sig))) [newes])
+    (subscribe evtsource newes (fn [_] (raise-event! newes (getv sig))))
     newes))
 
 
@@ -262,7 +261,7 @@
      (behind 1 sig))
   ([lag sig]
      (let [newsig (lagged-signal lag (getv sig))]
-       (subscribe sig (fn [[old new]] (setv! newsig new)) [newsig])
+       (subscribe sig newsig (fn [[old new]] (setv! newsig new)))
        newsig)))
 
 
@@ -278,7 +277,7 @@
      (changes identity sig))
   ([f sig]
   (let [newes (eventsource :changes)]
-    (subscribe sig (fn [[old new]] (raise-event! newes [(f old) (f new)])) [newes])
+    (subscribe sig newes (fn [[old new]] (raise-event! newes [(f old) (f new)])))
     newes)))
 
 
@@ -316,36 +315,30 @@
 
 
 (defn bind!
-  "Connects n input-signals with m output-signals so that on
-   each change of an input signal value the values in the output signals
-   are re-calculated by the function f. Function f must accept n
-   arguments and must either return a vector of m values or a single
-   non-seq value."
-  [f input-sigs output-sigs]
+  "Connects n input-signals with one output-signal so that on
+   each change of an input signal value the value of the output signal
+   is re-calculated by the function f. Function f must accept n
+   arguments and must a single value."
+  [f input-sigs output-sig]
   (let [calc-outputs (fn []
                        (let [input-values (c/map getv input-sigs)
-                             output-values (c/apply f input-values)]
-                         #_(println input-values "->" output-values)
-                         output-values))
-        listener-fn (if (= 1 (count output-sigs))
-                      (fn [_] (setv! (first output-sigs) (calc-outputs)))
-                      (fn [_] (some->> (calc-outputs)
-                                       as-vector
-                                       (setvs! output-sigs))))]
+                             output-value (c/apply f input-values)]
+                         #_(println input-values "->" output-value)
+                         output-value))
+        listener-fn (fn [_] (when output-sig
+                              (setv! output-sig (calc-outputs))))]
     (doseq [sig input-sigs]
-      (subscribe sig listener-fn output-sigs))
+      (subscribe sig output-sig listener-fn))
     ; initial value sync
-    (doseq [[s v] (c/map vector output-sigs (if (= 1 (count output-sigs))
-                                              (vector (calc-outputs))
-                                              (calc-outputs)))]
-      (publish! s v))
-  output-sigs))
+    (when output-sig
+      (publish! output-sig (calc-outputs)))
+  output-sig))
 
 
+; TODO eliminate this (replace by bind!)
 (defn bind-one!
   [f newsig & sigs]
-  (bind! f (vec (c/map as-signal sigs)) [newsig])
-  newsig)
+  (bind! f (vec (c/map as-signal sigs)) newsig))
 
 
 (defn apply
@@ -353,7 +346,7 @@
    f to the values of the input signals whenever one value changes."
   [f sigs]
   (let [newsig (signal :apply 0)]
-    (bind! f (c/map as-signal sigs) [newsig])
+    (bind! f (c/map as-signal sigs) newsig)
     newsig))
 
 
@@ -364,9 +357,9 @@
   (let [newsig (signal :if nil)
         switch-fn (fn [[old new]] (setv! newsig (if new (getv t-sig) (getv f-sig))))
         propagate-fn (fn [_] (setv! newsig (if (getv cond-sig) (getv t-sig) (getv f-sig))))]
-    (subscribe cond-sig switch-fn [newsig])
-    (subscribe t-sig propagate-fn [newsig])
-    (subscribe f-sig propagate-fn [newsig])
+    (subscribe cond-sig newsig switch-fn)
+    (subscribe t-sig newsig propagate-fn)
+    (subscribe f-sig newsig propagate-fn)
     ; initial value sync
     (publish! newsig (if (getv cond-sig) (getv t-sig) (getv f-sig)))
     newsig))
@@ -451,17 +444,18 @@
 ;; default implementations and factories
 
 (def ^:private reactive-fns
-  {:subscribe (fn [r f followers]
-                (p/add! (.ps r) (p/propagator f followers))
+  {:subscribe (fn [r follower f]
+                (p/add! (.ps r) (p/propagator f follower))
                 r)
-   :unsubscribe (fn [r f]
+   :unsubscribe (fn [r follower]
                   (doseq [p (->> (.ps r)
                                  p/propagators
-                                 (c/filter #(or (nil? f) (= (:fn %) f))))]
+                                 (c/filter #(or (nil? follower) (= (:target %) follower))))]
                     (p/remove! (.ps r) p))
                   r)
    :followers (fn [r]
-                (mapcat :targets (p/propagators (.ps r))))
+                (->> r (.ps) p/propagators (c/map :target) (c/remove nil?))
+                #_(c/map :target (p/propagators (.ps r))))
    :role (fn [r] (.role r))})
 
 
@@ -619,11 +613,11 @@
      (let [ps (p/propagator-set)
            newsig (ElapsedTime. role sig ps)]
        (subscribe time
+                  newsig
                   (fn [[t-1 t]]
                     #_(println (last-updated sig) (- t (last-updated sig)))
                     (publish! newsig [(- t-1 (last-updated sig))
-                                      (-  t (last-updated sig))]))
-                  [newsig])
+                                      (-  t (last-updated sig))])))
        newsig)))
 
 

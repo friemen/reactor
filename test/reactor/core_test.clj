@@ -18,15 +18,15 @@
 (deftest subscription-test
   (testing "Subscribe / Unsubscribe"
     (let [es (r/eventsource)]
-      (r/subscribe es nil? [:nil])
+      (r/subscribe es :nil nil?)
       (is (= '(:nil) (r/followers es)))
       (r/unsubscribe es constantly) ; this must have no effect
       (is (= '(:nil) (r/followers es)))
-      (r/unsubscribe es nil?)
+      (r/unsubscribe es :nil)
       (is (empty? (r/followers es)))))
   (testing "Unsubscribe all"
     (let [es (r/eventsource)]
-      (r/subscribe es nil? [:nil])
+      (r/subscribe es :nil nil?)
       (is (= '(:nil) (r/followers es)))
       (r/unsubscribe es nil)
       (is (empty? (r/followers es))))))
@@ -199,13 +199,12 @@
 
 (deftest bind!-test
   (let [inputsigs [(r/signal 0) (r/signal 0)]
-        prod (r/signal nil)
-        quot (r/signal nil)]
-    (r/bind! (fn [n1 n2] [(* n1 n2) (if (zero? n2) 0 (/ n1 n2))])
+        prod (r/signal nil)]
+    (r/bind! (fn [n1 n2] (* n1 n2))
              inputsigs
-             [prod quot])
+             prod)
     (r/setvs! inputsigs [2 3])
-    (is (= [6 2/3] (map r/getv [prod quot])))))
+    (is (= 6 (r/getv prod)))))
 
 
 (deftest apply-test

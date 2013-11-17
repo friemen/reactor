@@ -7,8 +7,8 @@
 
 (defn propagator
   "Creates and returns a new propagator."
-  [f ts]
-  {:fn f :targets (set ts)})
+  [f target]
+  {:fn f :target target})
 
 (defprotocol PropagatorSet
   (add! [pset prop]

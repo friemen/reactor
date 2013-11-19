@@ -364,3 +364,36 @@
       (is (nil? (rhm s)))
       (is (= 0 (rhm t)))
       (is (= 1 (rhm e))))))
+
+;; test for registration in reactives and disposal
+
+
+(deftest registration-test
+  (r/reset-reactives!)
+  (let [s (r/signal 0)]
+    (is (= s (-> r/reactives deref :active first)))
+    (is (empty? (-> r/reactives deref :disposed)))))
+
+
+(deftest dispose-test
+  (r/reset-reactives!)
+  (let [s (r/signal 0)
+        t (->> s r/changes r/hold)]
+    (r/dispose! t)
+    (is (r/disposed? t))
+    (is (not (r/disposed? s)))))
+
+
+(deftest unlink-test
+  (r/reset-reactives!)
+  (let [s (r/signal 0)
+        t (->> s r/changes r/hold)]
+    (is (= 3 (-> r/reactives deref :active count)))
+    (r/dispose! t)
+    (r/unlink!) ; remove t
+    (r/unlink!) ; remove the changes event source
+    (is (= 1 (-> r/reactives deref :active count)))
+    (r/unlink!) ; must not have any effect
+    (is (= 1 (-> r/reactives deref :active count)))
+    (is (not (r/disposed? s)))
+    (is (r/disposed? t))))

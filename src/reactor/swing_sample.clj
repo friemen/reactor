@@ -95,4 +95,5 @@
     (connect-mouse! panel mouseevents)
     (->> shapes
          (r/pass x/ui-thread)
-         (r/process-with (fn [_] (.repaint f))))))
+         (r/process-with (fn [_] (println "REPAINT") (.repaint f))))
+    shapes))

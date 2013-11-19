@@ -4,6 +4,7 @@
   (:require [reactor.propagation :as p]
             [reactor.execution :as x]
             [clojure.core :as c]
+            [clojure.set]
             [clojure.data.priority-map :refer [priority-map priority-map-by]]))
 
 ;; Concepts:
@@ -56,7 +57,17 @@
     "Sends a new event."))
 
 
+;; -----------------------------------------------------------------------------
+
 (declare signal lagged-signal time elapsed-time exceptions eventsource setv! enqueue!)
+
+(defonce reactives (atom {:active #{}
+                          :disposed #{}}))
+
+(defn reset-reactives!
+  []
+  (reset! reactives {:active #{}
+                     :disposed #{}}))
 
 
 ;; -----------------------------------------------------------------------------
@@ -110,6 +121,19 @@
    (satisfies? EventSource sig-or-val)
    (hold sig-or-val)
    :else (signal :constantly sig-or-val)))
+
+
+(defn dispose!
+  [react]
+  (swap! reactives #(let [{as :active
+                           ds :disposed} %]
+                      {:active (disj as react)
+                       :disposed (conj ds react)})))
+
+(defn disposed?
+  [react]
+  (nil? ((:active @reactives) react)))
+
 
 
 ;; -----------------------------------------------------------------------------
@@ -325,13 +349,16 @@
                              output-value (c/apply f input-values)]
                          #_(println input-values "->" output-value)
                          output-value))
-        listener-fn (fn [_] (when output-sig
-                              (setv! output-sig (calc-outputs))))]
+        listener-fn (fn [_]
+                      (let [v (calc-outputs)]
+                        (when output-sig
+                              (setv! output-sig v))))]
     (doseq [sig input-sigs]
       (subscribe sig output-sig listener-fn))
     ; initial value sync
-    (when output-sig
-      (publish! output-sig (calc-outputs)))
+    (let [v (calc-outputs)]
+      (when output-sig
+        (publish! output-sig v)))
   output-sig))
 
 
@@ -580,8 +607,10 @@
   ([role executor initial-value]
      (let [a (atom initial-value)
            updated (atom (if initial-value (now) nil))
-           ps (p/propagator-set)]
-       (DefaultSignal. role a updated executor ps))))
+           ps (p/propagator-set)
+           newsig (DefaultSignal. role a updated executor ps)]
+       (swap! reactives #(update-in % [:active] conj newsig))
+       newsig)))
 
 
 (defn lagged-signal
@@ -599,8 +628,10 @@
                              (c/map #(vector % (now)))
                              vec)
                         []))
-           ps (p/propagator-set)]
-       (LaggedSignal. role lag r q-ref executor ps))))
+           ps (p/propagator-set)
+           newsig (LaggedSignal. role lag r q-ref executor ps)]
+       (swap! reactives #(update-in % [:active] conj newsig))
+       newsig)))
 
 
 (defn elapsed-time
@@ -618,6 +649,7 @@
                     #_(println (last-updated sig) (- t (last-updated sig)))
                     (publish! newsig [(- t-1 (last-updated sig))
                                       (-  t (last-updated sig))])))
+       (swap! reactives #(update-in % [:active] conj newsig))
        newsig)))
 
 
@@ -628,15 +660,17 @@
   ([role]
      (eventsource role x/current-thread))
   ([role executor]
-     (DefaultEventSource. role executor (p/propagator-set))))
+     (let [newes (DefaultEventSource. role executor (p/propagator-set))]
+       (swap! reactives #(update-in % [:active] conj newes))
+       newes)))
 
 
 ;; -----------------------------------------------------------------------------
 ;; default reactives
 
-(def time (Time. :time (atom (now)) (p/propagator-set)))
-(def etime (signal 0))
-(def exceptions (eventsource))
+(defonce time (Time. :time (atom (now)) (p/propagator-set)))
+(defonce etime (signal 0))
+(defonce exceptions (eventsource))
 #_(->> exceptions (react-with #(println %)))
 
 ;; -----------------------------------------------------------------------------
@@ -657,6 +691,14 @@
       (str "S" (role react) "(" (getv react) ")")
       (str "E" (role react)))
     nil))
+
+(defn pr-reactives
+  []
+  (let [{as :active
+         ds :disposed} @reactives]
+    {:active (->> as (c/map pr-reactive))
+     :disposed (->> ds (c/map pr-reactive))}))
+
 
 (defn- pr-entry
   [ent]
@@ -733,10 +775,10 @@
    The 'height' of a reactive denotes the length of the longest
    path to a leaf of this tree. A leaf has height 0.
    'Reactive t follows reactive s' implicates 'height s > height t'"
-  ([reactives]
-     (heights reactives {}))
-  ([reactives rhm]
-     (loop [rs reactives, m rhm]
+  ([reacts]
+     (heights reacts {}))
+  ([reacts rhm]
+     (loop [rs reacts, m rhm]
        (if-let [r (first rs)]
          (if (m r)
            (recur (rest rs) m)
@@ -802,6 +844,26 @@
       :execution-queue (if (empty? exq) exq (pop exq))
       :execution-level exl)))
 
+
+
+(defn unlink!
+  "Unsubscribes all followers marked as disposed from reactives
+   that propagate to the disposed.
+   Event sources that don't have any followers left will also
+   be marked as disposed."
+  []
+  (swap! reactives #(let [{ds :disposed
+                           as :active} %
+                          new-ds (->> (for [r as, f (->> r followers (c/filter ds))] 
+                                        (do (unsubscribe r f)
+                                            (if (and (= 0 (count (followers r)))
+                                                     (satisfies? EventSource r))
+                                              r
+                                              nil)))
+                                      (c/remove nil?)
+                                      set)]
+                      {:active (set (clojure.set/difference as new-ds))
+                       :disposed new-ds})))
 
 (defn propagate!
   "Fills the execution-queue from the pending-queue.

@@ -59,15 +59,7 @@
 
 ;; -----------------------------------------------------------------------------
 
-(declare signal lagged-signal time elapsed-time exceptions eventsource setv! enqueue!)
-
-(defonce reactives (atom {:active #{}
-                          :disposed #{}}))
-
-(defn reset-reactives!
-  []
-  (reset! reactives {:active #{}
-                     :disposed #{}}))
+(declare signal lagged-signal time elapsed-time exceptions eventsource register! setv! enqueue!)
 
 
 ;; -----------------------------------------------------------------------------
@@ -121,19 +113,6 @@
    (satisfies? EventSource sig-or-val)
    (hold sig-or-val)
    :else (signal :constantly sig-or-val)))
-
-
-(defn dispose!
-  [react]
-  (swap! reactives #(let [{as :active
-                           ds :disposed} %]
-                      {:active (disj as react)
-                       :disposed (conj ds react)})))
-
-(defn disposed?
-  [react]
-  (nil? ((:active @reactives) react)))
-
 
 
 ;; -----------------------------------------------------------------------------
@@ -468,6 +447,7 @@
 
 
 
+;; -----------------------------------------------------------------------------
 ;; default implementations and factories
 
 (def ^:private reactive-fns
@@ -609,7 +589,7 @@
            updated (atom (if initial-value (now) nil))
            ps (p/propagator-set)
            newsig (DefaultSignal. role a updated executor ps)]
-       (swap! reactives #(update-in % [:active] conj newsig))
+       (register! newsig)
        newsig)))
 
 
@@ -630,7 +610,7 @@
                         []))
            ps (p/propagator-set)
            newsig (LaggedSignal. role lag r q-ref executor ps)]
-       (swap! reactives #(update-in % [:active] conj newsig))
+       (register! newsig)
        newsig)))
 
 
@@ -649,7 +629,7 @@
                     #_(println (last-updated sig) (- t (last-updated sig)))
                     (publish! newsig [(- t-1 (last-updated sig))
                                       (-  t (last-updated sig))])))
-       (swap! reactives #(update-in % [:active] conj newsig))
+       (register! newsig)
        newsig)))
 
 
@@ -661,17 +641,71 @@
      (eventsource role x/current-thread))
   ([role executor]
      (let [newes (DefaultEventSource. role executor (p/propagator-set))]
-       (swap! reactives #(update-in % [:active] conj newes))
+       (register! newes)
        newes)))
 
 
 ;; -----------------------------------------------------------------------------
-;; default reactives
+;; bookkeeping / disposal for reactives and default reactives
 
 (defonce time (Time. :time (atom (now)) (p/propagator-set)))
-(defonce etime (signal 0))
-(defonce exceptions (eventsource))
-#_(->> exceptions (react-with #(println %)))
+(defonce etime (DefaultSignal. :elapsed-time (atom 0) (atom (now)) x/current-thread (p/propagator-set)))
+(defonce exceptions (let [ex (DefaultEventSource. :exceptions x/current-thread (p/propagator-set))]
+                      (->> ex (react-with #(println %)))
+                      ex))
+
+
+(defonce default-reactives {:active #{time etime exceptions}
+                            :disposed #{}})
+
+(defonce reactives (atom default-reactives))
+
+(defn register!
+  [react]
+  (swap! reactives #(update-in % [:active] conj react)))
+
+
+(defn reset-reactives!
+  []
+  (reset! reactives default-reactives))
+
+
+(defn dispose!
+  "Marks the given reactive as disposed. The next call to unlink! will
+   remove the reactive from all other reactives that it follows."
+  [react]
+  (when-not ((:active default-reactives) react)
+    (swap! reactives #(let [{as :active
+                             ds :disposed} %]
+                        {:active (disj as react)
+                         :disposed (conj ds react)}))))
+
+(defn disposed?
+  "Determines if a reactive is active."
+  [react]
+  (nil? ((:active @reactives) react)))
+
+
+
+(defn unlink!
+  "Unsubscribes all followers marked as disposed from reactives
+   that propagate to the disposed reactives.
+   Event sources that don't have any followers left will also
+   be marked as disposed."
+  []
+  (swap! reactives #(let [{ds :disposed
+                           as :active} %
+                          new-ds (->> (for [r as, f (->> r followers (c/filter ds))] 
+                                        (do (unsubscribe r f)
+                                            (if (and (= 0 (count (followers r)))
+                                                     (satisfies? EventSource r))
+                                              r
+                                              nil)))
+                                      (c/remove nil?)
+                                      set)]
+                      {:active (set (clojure.set/difference as new-ds))
+                       :disposed new-ds})))
+
 
 ;; -----------------------------------------------------------------------------
 ;; implementation for propagation engine
@@ -844,26 +878,6 @@
       :execution-queue (if (empty? exq) exq (pop exq))
       :execution-level exl)))
 
-
-
-(defn unlink!
-  "Unsubscribes all followers marked as disposed from reactives
-   that propagate to the disposed.
-   Event sources that don't have any followers left will also
-   be marked as disposed."
-  []
-  (swap! reactives #(let [{ds :disposed
-                           as :active} %
-                          new-ds (->> (for [r as, f (->> r followers (c/filter ds))] 
-                                        (do (unsubscribe r f)
-                                            (if (and (= 0 (count (followers r)))
-                                                     (satisfies? EventSource r))
-                                              r
-                                              nil)))
-                                      (c/remove nil?)
-                                      set)]
-                      {:active (set (clojure.set/difference as new-ds))
-                       :disposed new-ds})))
 
 (defn propagate!
   "Fills the execution-queue from the pending-queue.

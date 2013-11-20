@@ -16,7 +16,7 @@
 ;; subscribe / unsubscribe test
 
 (deftest subscription-test
-  (testing "Subscribe / Unsubscribe"
+  (testing "Subscribe / Unsubscribe by follower"
     (let [es (r/eventsource)]
       (r/subscribe es :nil nil?)
       (is (= '(:nil) (r/followers es)))
@@ -24,7 +24,14 @@
       (is (= '(:nil) (r/followers es)))
       (r/unsubscribe es :nil)
       (is (empty? (r/followers es)))))
-  (testing "Unsubscribe all"
+  (testing "Subscribe / Unscribe by fn"
+    (let [s (r/signal 0)
+          pr-fn #(println %)]
+      (r/subscribe s :foo pr-fn)
+      (is (= '(:foo) (r/followers s)))
+      (r/unsubscribe s pr-fn)
+      (is (empty? (r/followers s)))))
+  (testing "Subscribe / Unsubscribe all"
     (let [es (r/eventsource)]
       (r/subscribe es :nil nil?)
       (is (= '(:nil) (r/followers es)))
@@ -366,6 +373,15 @@
       (is (= 1 (rhm e))))))
 
 ;; test for registration in reactives and disposal
+
+
+(deftest exceptions-es-test
+  (let [throwing (fn [_] (throw (IllegalArgumentException. "Test Dummy Exception")))
+        s (r/signal 0)
+        last-ex (->> r/exceptions r/hold)]
+    (->> s (r/process-with throwing))
+    (r/setv! s 1)
+    (is (instance? IllegalArgumentException (r/getv last-ex)))))
 
 
 (deftest registration-test

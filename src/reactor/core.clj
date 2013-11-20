@@ -335,9 +335,10 @@
     (doseq [sig input-sigs]
       (subscribe sig output-sig listener-fn))
     ; initial value sync
-    (let [v (calc-outputs)]
-      (when output-sig
-        (publish! output-sig v)))
+    (try (let [v (calc-outputs)]
+           (when output-sig
+             (publish! output-sig v)))
+         (catch Exception ex (raise-event! exceptions ex)))
   output-sig))
 
 
@@ -451,13 +452,15 @@
 ;; default implementations and factories
 
 (def ^:private reactive-fns
-  {:subscribe (fn [r follower f]
-                (p/add! (.ps r) (p/propagator f follower))
+  {:subscribe (fn [r react f]
+                (p/add! (.ps r) (p/propagator f react))
                 r)
-   :unsubscribe (fn [r follower]
+   :unsubscribe (fn [r react-or-fn]
                   (doseq [p (->> (.ps r)
                                  p/propagators
-                                 (c/filter #(or (nil? follower) (= (:target %) follower))))]
+                                 (c/filter #(or (nil? react-or-fn) ; remove all
+                                                (= (:target %) react-or-fn)
+                                                (= (:fn %) react-or-fn))))]
                     (p/remove! (.ps r) p))
                   r)
    :followers (fn [r]
@@ -891,20 +894,20 @@
    Repeats publish! for first entry of the execution-queue as long
    as the execution-queue is not empty."
   []
-  (loop [eng (swap! engine begin)]
-    (when-let [e (-> eng :execution-queue peek first)]
-      (publish! (:reactive e) (:value e))
-      (recur (swap! engine update)))))
+  (try (loop [eng (swap! engine begin)]
+         (when-let [e (-> eng :execution-queue peek first)]
+           (publish! (:reactive e) (:value e))
+           (recur (swap! engine update))))
+       (catch Exception ex (raise-event! exceptions ex))))
 
 
 (defn execute!
   "Publishes new time values and calls propagate!, handles errors
    by sending them to the exceptions event source."
   []
-  (try (do (publish! etime (/ (- (now) (getv time)) 1000))
+  (do (publish! etime (/ (- (now) (getv time)) 1000))
            (publish! time (now))
-           (propagate!))
-       (catch Exception ex (raise-event! exceptions ex)))  
+           (propagate!))  
   (pr-engine (swap! engine update-in [:cycles] inc)))
 
 

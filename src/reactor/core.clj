@@ -841,8 +841,9 @@
                                 (let [frhm (heights fs (assoc m r -1))]
                                   (->> fs
                                        (c/map frhm)
+                                       (c/map #(or % 0))
                                        (c/apply max)
-                                       inc
+                                       inc 
                                        (assoc m r)
                                        (c/merge frhm)))))))
          m))))

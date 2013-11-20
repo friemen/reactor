@@ -8,7 +8,7 @@
 (defn reset-engine
   [f]
   (r/reset-engine!)
-  (alter-var-root #'r/auto-execute (constantly 10))
+  (alter-var-root #'r/*auto-execute* (constantly 10))
   (f))
 
 (use-fixtures :each reset-engine)
@@ -281,7 +281,7 @@
       (r/setv! n1 4)
       (is (= 28 (r/getv plus10*2)))))
   (testing "Expressions with a reference to the new signal <S>"
-    (binding [r/auto-execute 0]
+    (binding [r/*auto-execute* 0]
       (let [time (r/signal 0)
             elapsed (->> time
                          r/changes
@@ -376,12 +376,13 @@
 
 
 (deftest exceptions-es-test
-  (let [throwing (fn [_] (throw (IllegalArgumentException. "Test Dummy Exception")))
-        s (r/signal 0)
-        last-ex (->> r/exceptions r/hold)]
-    (->> s (r/process-with throwing))
-    (r/setv! s 1)
-    (is (instance? IllegalArgumentException (r/getv last-ex)))))
+  (binding [r/*default-exception-handler* (fn [_])]
+    (let [throwing (fn [_] (throw (IllegalArgumentException. "Test Dummy Exception")))
+          s (r/signal 0)
+          last-ex (->> r/exceptions r/hold)]
+      (->> s (r/process-with throwing))
+      (r/setv! s 1)
+      (is (instance? IllegalArgumentException (r/getv last-ex))))))
 
 
 (deftest registration-test

@@ -59,7 +59,7 @@
 
 ;; -----------------------------------------------------------------------------
 
-(declare signal lagged-signal time elapsed-time exceptions eventsource register! setv! enqueue!)
+(declare signal lagged-signal time elapsed-time as-occ exceptions eventsource register! setv! enqueue!)
 
 
 ;; -----------------------------------------------------------------------------
@@ -338,7 +338,7 @@
     (try (let [v (calc-outputs)]
            (when output-sig
              (publish! output-sig v)))
-         (catch Exception ex (raise-event! exceptions ex)))
+         (catch Exception ex (publish! exceptions (as-occ ex))))
   output-sig))
 
 
@@ -643,14 +643,18 @@
 ;; -----------------------------------------------------------------------------
 ;; bookkeeping / disposal for reactives and default reactives
 
-(defn default-exception-handler
+(defn ^:dynamic *default-exception-handler*
   [ex]
-  (println ex))
+  (.printStackTrace ex))
+
+(defn- exception-handler
+  [ex-occ]
+  ((var-get #'*default-exception-handler*) (:event ex-occ)))
 
 (defonce time (Time. :time (atom (now)) (p/propagator-set)))
 (defonce etime (DefaultSignal. :elapsed-time (atom 0) (atom (now)) x/current-thread (p/propagator-set)))
 (defonce exceptions (let [ex (DefaultEventSource. :exceptions x/current-thread (p/propagator-set))]
-                      (->> ex (react-with default-exception-handler))
+                      (->> ex (react-with exception-handler))
                       ex))
 
 
@@ -714,7 +718,7 @@
   (unsubscribe time nil)
   (unsubscribe etime nil)
   (unsubscribe exceptions nil)
-  (->> exceptions (react-with default-exception-handler)))
+  (->> exceptions (react-with exception-handler)))
 
 
 
@@ -724,7 +728,7 @@
 (declare execute!)
 
 (defonce engine (atom nil))
-(def ^:dynamic auto-execute 10)
+(def ^:dynamic *auto-execute* 10)
 (defonce executor (atom nil))
 
 
@@ -802,12 +806,12 @@
 (defn start-engine!
   "Start the engine for scheduled execution with the given resolution
    as delay between execution cycles.
-   Sets var auto-execute to 0 which inhibits any implicit propagation
+   Sets var *auto-execute* to 0 which inhibits any implicit propagation
    after enqueue."
   ([]
      (start-engine! 50))
   ([resolution]
-     (alter-var-root #'auto-execute (constantly 0))
+     (alter-var-root #'*auto-execute* (constantly 0))
      (stop-engine!)
      (when-not @executor
        (reset! executor (x/timer-executor resolution)))
@@ -903,7 +907,7 @@
          (when-let [e (-> eng :execution-queue peek first)]
            (publish! (:reactive e) (:value e))
            (recur (swap! engine update))))
-       (catch Exception ex (raise-event! exceptions ex))))
+       (catch Exception ex (publish! exceptions (as-occ ex)))))
 
 
 (defn execute!
@@ -919,13 +923,13 @@
 (defn enqueue!
   "Adds an update entry for the given reactive and value x
    to either the execution queue or the pending queue.
-   The var auto-execute specifies the number of automatic
+   The var *auto-execute* specifies the number of automatic
    propagations (useful for REPL usage and unit tests)."
   [react x]
   (let [stopped? (-> @engine :execution-queue empty?)]
     (swap! engine #(enqueue % react x))
     (when (and stopped? (nil? @executor))
-      (doseq [_ (range auto-execute)]
+      (doseq [_ (range *auto-execute*)]
         (propagate!)))))
 
 

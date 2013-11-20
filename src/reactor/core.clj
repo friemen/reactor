@@ -342,12 +342,6 @@
   output-sig))
 
 
-; TODO eliminate this (replace by bind!)
-(defn bind-one!
-  [f newsig & sigs]
-  (bind! f (vec (c/map as-signal sigs)) newsig))
-
-
 (defn apply
   "Creates a signal that is updated by applying the n-ary function
    f to the values of the input signals whenever one value changes."
@@ -396,7 +390,6 @@
   [exprs]
   (vec (c/map lift-expr exprs)))
 
-;; TODO add support for fn, -> ->>
 
 (defn- lift-expr
   [expr]
@@ -433,9 +426,8 @@
   ([initial-value expr]
      (let [s (symbol "<S>")]
        `(let [~s (reactor.core/signal ~initial-value)]
-          (bind-one! identity ~s ~(lift-expr expr))
+          (bind! identity [~(lift-expr expr)] ~s)
           ~s)))) 
-
 
 
 (defn process-with
@@ -651,10 +643,14 @@
 ;; -----------------------------------------------------------------------------
 ;; bookkeeping / disposal for reactives and default reactives
 
+(defn default-exception-handler
+  [ex]
+  (println ex))
+
 (defonce time (Time. :time (atom (now)) (p/propagator-set)))
 (defonce etime (DefaultSignal. :elapsed-time (atom 0) (atom (now)) x/current-thread (p/propagator-set)))
 (defonce exceptions (let [ex (DefaultEventSource. :exceptions x/current-thread (p/propagator-set))]
-                      (->> ex (react-with #(println %)))
+                      (->> ex (react-with default-exception-handler))
                       ex))
 
 
@@ -663,7 +659,8 @@
 
 (defonce reactives (atom default-reactives))
 
-(defn register!
+(defn- register!
+  "Registers a reactive as active."
   [react]
   (swap! reactives #(update-in % [:active] conj react)))
 
@@ -682,7 +679,6 @@
   "Determines if a reactive is active."
   [react]
   (nil? ((:active @reactives) react)))
-
 
 
 (defn unlink!
@@ -706,6 +702,7 @@
 
 
 (defn reset-reactives!
+  "Disposes and unlinks all reactives. Thereafter only the default reactives remain."
   []
   (swap! reactives #(let [{ds :disposed
                            as :active} %]
@@ -713,7 +710,11 @@
                         :disposed (clojure.set/union ds
                                                      (clojure.set/difference as
                                                                              (:active default-reactives))))))
-  (unlink!))
+  (unlink!)
+  (unsubscribe time nil)
+  (unsubscribe etime nil)
+  (unsubscribe exceptions nil)
+  (->> exceptions (react-with default-exception-handler)))
 
 
 
@@ -729,6 +730,7 @@
 
 
 (defn pr-reactive
+  "Returns a text representation of a signal or event source."
   [react]
   (if react
     (if (satisfies? Signal react)
@@ -737,6 +739,7 @@
     nil))
 
 (defn pr-reactives
+  "Returns a text representation of the registered signals / event sources."
   []
   (let [{as :active
          ds :disposed} @reactives]
@@ -745,10 +748,12 @@
 
 
 (defn- pr-entry
+  "Returns a text representation of an update entry."
   [ent]
   (update-in ent [:reactive] pr-reactive))
 
 (defn pr-engine
+  "Returns a text representation of the current state of the propagation engine."
   ([]
      (pr-engine @engine))
   ([eng]

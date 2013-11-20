@@ -110,7 +110,9 @@ See also [core.clj](src/reactor/core.clj).
 
 ### Default Reactives
 
-**time** -- A signal that is regularly updated and always returns the current epoch time in milliseconds.
+**time** -- A signal updated by the execution engine that returns the current epoch time in milliseconds.
+
+**etime** -- A signal updated by the execution engine that returns the elapsed time in seconds since its last update.
 
 **exceptions** -- An event source that all caught exceptions are directed to.
 
@@ -120,13 +122,6 @@ See also [core.clj](src/reactor/core.clj).
 **signal** -- Creates a new signal with the given initial value.
 
 **eventsource** -- Creates a new event source.
-
-
-### Functions applying to Signals as well as Event Sources
-
-**pass** -- Creates a reactive that handles propagation/processing in a different thread. 
-
-**react-with** -- Subscribes a listener function to an event source or signal.
 
 
 ### Functions applying to Event Sources
@@ -192,7 +187,25 @@ for unit tests and in the REPL.
 
 **reset-engine!** -- Removes all queued propagation entries from the engine.
 
-       
+**pr-engine** -- Returns a text representing the current state of the engine.
+
+
+### Functions applying to Signals as well as Event Sources
+
+**pass** -- Creates a reactive that handles propagation/processing in a different thread. 
+
+**react-with** -- Subscribes a listener function to an event source or signal.
+
+**dispose!** -- Marks a reactive for disposal.
+
+**unlink!** -- Removes all disposed reactives from the followers lists of active reactives.
+
+**reset-reactives!** -- Disposes and unlinks all active reactives except the default reactives.
+
+**pr-reactives** -- Returns a text representation of all known active and disposed reactives.
+
+
+
 
 References
 ----------

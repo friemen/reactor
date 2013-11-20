@@ -665,11 +665,6 @@
   (swap! reactives #(update-in % [:active] conj react)))
 
 
-(defn reset-reactives!
-  []
-  (reset! reactives default-reactives))
-
-
 (defn dispose!
   "Marks the given reactive as disposed. The next call to unlink! will
    remove the reactive from all other reactives that it follows."
@@ -703,8 +698,20 @@
                                               nil)))
                                       (c/remove nil?)
                                       set)]
-                      {:active (set (clojure.set/difference as new-ds))
+                      {:active (clojure.set/difference as new-ds)
                        :disposed new-ds})))
+
+
+(defn reset-reactives!
+  []
+  (swap! reactives #(let [{ds :disposed
+                           as :active} %]
+                      (assoc default-reactives
+                        :disposed (clojure.set/union ds
+                                                     (clojure.set/difference as
+                                                                             (:active default-reactives))))))
+  (unlink!))
+
 
 
 ;; -----------------------------------------------------------------------------
@@ -790,7 +797,7 @@
    Sets var auto-execute to 0 which inhibits any implicit propagation
    after enqueue."
   ([]
-     (start-engine! 40))
+     (start-engine! 50))
   ([resolution]
      (alter-var-root #'auto-execute (constantly 0))
      (stop-engine!)

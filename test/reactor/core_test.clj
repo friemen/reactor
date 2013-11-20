@@ -369,14 +369,14 @@
 
 
 (deftest registration-test
-  (r/reset-reactives!)
+  (reset! r/reactives r/default-reactives)
   (let [s (r/signal 0)]
     (is ((-> r/reactives deref :active) s))
     (is (empty? (-> r/reactives deref :disposed)))))
 
 
 (deftest dispose-test
-  (r/reset-reactives!)
+  (reset! r/reactives r/default-reactives)
   (let [s (r/signal 0)
         t (->> s r/changes r/hold)]
     (r/dispose! t)
@@ -385,7 +385,7 @@
 
 
 (deftest unlink-test
-  (r/reset-reactives!)
+  (reset! r/reactives r/default-reactives)
   (let [s (r/signal 0)
         t (->> s r/changes r/hold)]
     (is (= 6 (-> r/reactives deref :active count)))

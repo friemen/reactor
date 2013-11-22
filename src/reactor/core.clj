@@ -115,6 +115,24 @@
    :else (signal :constantly sig-or-val)))
 
 
+(defn follows
+  "Connects destination reactive with source reactive, so that destination reactive always has
+   the same value / occurence as source reactive."
+  [dst-react src-react]
+  (let [code (fn [react]
+               (cond (satisfies? EventSource react) "E"
+                     (satisfies? Signal react) "S"
+                     :default (throw (IllegalArgumentException.
+                                      (str react " satisfies neither EventSource nor Signal.")))))
+        type (str (code dst-react) " <- " (code src-react))]
+    (subscribe src-react dst-react (case type
+                                     "E <- E" #(raise-event! dst-react %) 
+                                     "S <- S" #(setv! dst-react (second %)) 
+                                     "E <- S" #(raise-event! dst-react (second %))
+                                     "S <- E" #(setv! dst-react (:event %)))) 
+    type))
+
+
 ;; -----------------------------------------------------------------------------
 ;; combinators for event sources
 
@@ -322,7 +340,7 @@
    each change of an input signal value the value of the output signal
    is re-calculated by the function f. Function f must accept n
    arguments and must a single value."
-  [f input-sigs output-sig]
+  [output-sig f input-sigs]
   (let [calc-outputs (fn []
                        (let [input-values (c/map getv input-sigs)
                              output-value (c/apply f input-values)]
@@ -347,7 +365,7 @@
    f to the values of the input signals whenever one value changes."
   [f sigs]
   (let [newsig (signal :apply 0)]
-    (bind! f (c/map as-signal sigs) newsig)
+    (bind! newsig f (c/map as-signal sigs))
     newsig))
 
 
@@ -426,7 +444,7 @@
   ([initial-value expr]
      (let [s (symbol "<S>")]
        `(let [~s (reactor.core/signal ~initial-value)]
-          (bind! identity [~(lift-expr expr)] ~s)
+          (bind! ~s identity [~(lift-expr expr)])
           ~s)))) 
 
 
@@ -435,7 +453,7 @@
    executed whenever one of the signals changes its value. The output of the
    function execution is discarded. Instead returns the input signals."
   [f & input-sigs]
-  (bind! f (vec input-sigs) nil)
+  (bind! nil f (vec input-sigs))
   (if (= 1 (count input-sigs)) (first input-sigs) (vec input-sigs)))
 
 

@@ -39,6 +39,35 @@
       (is (empty? (r/followers es))))))
 
 
+(deftest follows-test
+  (testing "Signal <- Signal"
+    (let [s (r/signal 0)
+          d (r/signal 0)]
+      (r/follows d s)
+      (r/setv! s 1)
+      (is (= 1 (r/getv d)))))
+  (testing "Signal <- EventSource"
+    (let [s (r/eventsource)
+          d (r/signal 0)]
+      (r/follows d s)
+      (r/raise-event! s 1)
+      (is (= 1 (r/getv d)))))
+  (testing "EventSource <- EventSource"
+    (let [s (r/eventsource)
+          d (r/eventsource)
+          x (r/hold 0 d)]
+      (r/follows d s)
+      (r/raise-event! s 1)
+      (is (= 1 (r/getv x)))))
+  (testing "EventSource <- Signal"
+    (let [s (r/signal 0)
+          d (r/eventsource)
+          x (r/hold d)]
+      (r/follows d s)
+      (r/setv! s 1)
+      (is (= 1 (r/getv x))))))
+
+
 ;; tests for combinators on eventsources
 
 (deftest pass-test
@@ -207,9 +236,9 @@
 (deftest bind!-test
   (let [inputsigs [(r/signal 0) (r/signal 0)]
         prod (r/signal nil)]
-    (r/bind! (fn [n1 n2] (* n1 n2))
-             inputsigs
-             prod)
+    (r/bind! prod
+             (fn [n1 n2] (* n1 n2))
+             inputsigs)
     (r/setvs! inputsigs [2 3])
     (is (= 6 (r/getv prod)))))
 
@@ -339,7 +368,7 @@
 ;; test demonstrating how a statemachine can be used
 ;; in conjunction with event sources and reduce
 
-(deftest reduce-test
+(deftest reduce-sm-test
   (let [initial-state {:state :idle, :path []}
         mouse-events (r/eventsource)
         drawing-state (->> mouse-events (r/reduce draw-statemachine initial-state))]

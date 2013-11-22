@@ -73,7 +73,7 @@
   (r/reset-engine!)
   (r/reset-reactives!)
   (f)
-  (r/start-engine! 50)
+  (r/start-engine! 100)
   (str "Number of reactives: " (-> (r/pr-reactives) :active count)))
 
 

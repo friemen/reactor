@@ -204,7 +204,7 @@ for unit tests and in the REPL.
 
 **pr-reactives** -- Returns a text representation of all known active and disposed reactives.
 
-
+**follows** -- Connects existing destination reactive with source reactive, so that destination follows source.
 
 
 References

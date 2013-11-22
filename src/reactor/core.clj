@@ -474,8 +474,7 @@
                     (p/remove! (.ps r) p))
                   r)
    :followers (fn [r]
-                (->> r (.ps) p/propagators (c/map :target) (c/remove nil?))
-                #_(c/map :target (p/propagators (.ps r))))
+                (->> r (.ps) p/propagators (c/map :target) (c/remove nil?)))
    :role (fn [r] (.role r))})
 
 

@@ -21,18 +21,23 @@
     "Returns the set of added propagators."))
 
 
-(defrecord DefaultPropagatorSet [ps]
+(defrecord DefaultPropagatorSet [ps-atom]
   PropagatorSet
   (add! [pset p]
     {:pre [(fn? (:fn p))]}
-    (swap! ps #(conj % p)))
+    (swap! ps-atom (fn [ps]
+                     (conj (if (:target p)
+                             (->> ps ; remove existing propagator to target
+                                  (remove #(= (:target %) (:target p)))
+                                  set)
+                             ps)
+                           p))))
   (remove! [pset p]
-    {:pre [(fn? (:fn p))]}
-    (swap! ps #(disj % p)))
+    (swap! ps-atom #(disj % p)))
   (propagate-all! [pset x]
-    (doseq [p @ps] ((:fn p) x)))
+    (doseq [p @ps-atom] ((:fn p) x)))
   (propagators [pset]
-    @ps))
+    @ps-atom))
 
 (defn propagator-set
   "Creates and returns a new PropagatorSet instance."

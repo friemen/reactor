@@ -360,13 +360,20 @@
   output-sig))
 
 
-(defn apply
+(defn apply*
   "Creates a signal that is updated by applying the n-ary function
    f to the values of the input signals whenever one value changes."
   [f sigs]
   (let [newsig (signal :apply 0)]
     (bind! newsig f (c/map as-signal sigs))
     newsig))
+
+
+(defn apply
+  "Creates a signal that is updated by applying the n-ary function
+   f to the values of the input signals whenever one value changes."
+  [f & sigs]
+  (apply* f sigs))
 
 
 (defn if*
@@ -387,7 +394,7 @@
 (defn and*
   "Creates a signal that contains the result of a logical And of all signals values."
   [& sigs]
-  (apply (fn [& xs]
+  (apply* (fn [& xs]
             (if (every? identity xs)
               (last xs)
               false)) sigs))
@@ -396,17 +403,34 @@
 (defn or*
   "Creates a signal that contains the result of a logical Or of all signals values."
   [& sigs]
-  (apply (fn [& xs]
+  (apply* (fn [& xs]
                     (if-let [r (some identity xs)]
                       r
                       false)) sigs))
-
 
 (declare lift-expr)
 
 (defn- lift-exprs
   [exprs]
-  (vec (c/map lift-expr exprs)))
+  (c/map lift-expr exprs))
+
+
+(defn- lift-threaded-exprs
+  [exprs]
+  (cons (lift-expr (first exprs))
+        (c/map (fn [expr]
+                 (if (list? expr)
+                   (lift-expr expr)
+                   `(apply ~expr)))
+               (rest exprs))))
+
+
+(defmacro thread-2nd*
+  ([e] e)
+  ([e1 e2] (if (seq? e2)
+             `(~(first e2) ~(second e2) ~e1 ~@(next (next e2)))
+             (list e2 e1)))
+  ([e1 e2 & es] `(thread-2nd* (thread-2nd* ~e1 ~e2) ~@es)))
 
 
 (defn- lift-expr
@@ -424,9 +448,11 @@
               `(if* ~(lift-expr c)
                     ~(lift-expr t)
                     ~(if f (lift-expr f) (lift-expr nil))))
+         ->> `(->> ~@(lift-threaded-exprs (rest expr)))
+         -> `(thread-2nd* ~@(lift-threaded-exprs (rest expr)))
          or `(or* ~@(lift-exprs (rest expr)))
          and `(and* ~@(lift-exprs (rest expr)))
-         `(reactor.core/apply ~(first expr) ~(lift-exprs (rest expr)))) ; regular function application
+         `(reactor.core/apply ~(first expr) ~@(lift-exprs (rest expr)))) ; regular function application
        (case expr
          <S> (symbol "<S>")
          `(as-signal ~expr))))  ;; no list, make sure it's a signal
@@ -438,7 +464,7 @@
    sexpr changes.
    Supports in addition to application of regular functions the following
    subset of Clojure forms:
-      if, or, and, let"
+      if, or, and, let, -> and ->>"
   ([expr]
      `(lift 0 ~expr))
   ([initial-value expr]

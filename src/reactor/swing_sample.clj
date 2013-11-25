@@ -69,7 +69,9 @@
         clickpos (->> clickposE (r/hold startpos))
         sa (r/signal (speed-angle 0 0))
         circlepos (r/signal startpos)
-        circlepos-on-click (->> clickposE (r/snapshot circlepos) (r/hold startpos))
+        circlepos-on-click (->> clickposE
+                                (r/snapshot circlepos)
+                                (r/hold startpos))
         shapes (r/signal [])]
     (-> sa (r/follows
             (r/lift startpos (speed-angle 5 (angle

@@ -246,8 +246,8 @@
 (deftest apply-test
   (let [n1 (r/signal 0)
         n2 (r/signal 0)
-        n1half (r/apply / [n1 2]) ; always contains the half of n1's value 
-        sum (r/apply + [n1 n2]) ; always contains the sum of n1 and n2
+        n1half (r/apply / n1 2) ; always contains the half of n1's value 
+        sum (r/apply + n1 n2) ; always contains the sum of n1 and n2
         sum>10 (->> sum
                     (r/changes #(when (> % 10) "ALARM!"))
                     (r/react-with #(println %)))]
@@ -257,6 +257,7 @@
     (r/setv! n2 8)
     (is (= 12 (r/getv sum))))) ; check that sum is up-to-date
 
+;; tests for lifting of expressions
 
 (deftest lift-let-test
   (let [n1 (r/signal 2)
@@ -281,6 +282,22 @@
     (is (= nil (r/getv ifs)))
     (r/setv! n2 6)
     (is (= (r/getv ifelses)))))
+
+
+(deftest lift-threading-test
+  (testing "lift ->>"
+    (let [s (r/signal 1)
+          t (r/lift (->> s (+ 1)))
+          u (r/lift (->> 2 (* s)))]
+      (is (= 2 (r/getv t)))
+      (is (= 2 (r/getv u)))
+      (r/setv! s 3)
+      (is (= 4 (r/getv t)))
+      (is (= 6 (r/getv u)))))
+  (testing "lift ->"
+    (let [s (r/signal 3)
+          t (r/lift (-> s inc (/ 2)))]
+      (is (= 2 (r/getv t))))))
 
 
 (deftest lift-and-test

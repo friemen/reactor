@@ -59,7 +59,9 @@
 
 ;; -----------------------------------------------------------------------------
 
-(declare signal lagged-signal time elapsed-time as-occ exceptions eventsource register! setv! enqueue!)
+(declare signal lagged-signal time elapsed-time
+         as-occ exceptions eventsource lift
+         register! setv! enqueue!)
 
 
 ;; -----------------------------------------------------------------------------
@@ -433,6 +435,42 @@
   ([e1 e2 & es] `(thread-2nd* (thread-2nd* ~e1 ~e2) ~@es)))
 
 
+(defn- outermost-fn-var
+  [expr]
+  (resolve
+   (case (first expr)
+     (-> ->>) (let [last-expr (last expr)]
+                (if (seq? last-expr)
+                  (first last-expr)
+                  last-expr))
+     (first expr))))
+
+
+(defn- yields-eventsource?
+  [expr]
+  (->> expr
+       outermost-fn-var
+       (contains? #{#'reactor.core/map #'reactor.core/filter #'reactor.core/remove #'reactor.core/delay #'reactor.core/calm #'reactor.core/merge #'reactor.core/snapshot #'reactor.core/changes})))
+
+
+(defn- yields-signal?
+  [expr]
+  (->> expr
+       outermost-fn-var
+       (contains? #{#'reactor.core/hold #'reactor.core/signal #'reactor.core/switch #'reactor.core/reduce #'reactor.core/reduce-t #'reactor.core/behind #'reactor.core/lift #'reactor.core/apply})))
+
+
+(defn- lift-fn-expr
+  [expr]
+  (cond
+   (yields-signal? expr) expr
+   (yields-eventsource? expr) `(hold ~expr)
+   :else (case (first expr)
+           ->> `(->> ~@(lift-threaded-exprs (rest expr)))
+           -> `(thread-2nd* ~@(lift-threaded-exprs (rest expr)))
+           `(reactor.core/apply ~(first expr) ~@(lift-exprs (rest expr))))))
+
+
 (defn- lift-expr
   [expr]
      (if (list? expr)
@@ -443,16 +481,13 @@
                                         (mapcat (fn [[s expr]] [s (lift-expr expr)]))
                                         vec)]
                `(let ~lifted-bindings ~@(lift-exprs exprs)))
-         ;; TODO fn (fn fn*) (let [[_ p & exprs] expr] `(signal (fn ~p )))
          if (let [[_ c t f] expr]
               `(if* ~(lift-expr c)
                     ~(lift-expr t)
                     ~(if f (lift-expr f) (lift-expr nil))))
-         ->> `(->> ~@(lift-threaded-exprs (rest expr)))
-         -> `(thread-2nd* ~@(lift-threaded-exprs (rest expr)))
          or `(or* ~@(lift-exprs (rest expr)))
          and `(and* ~@(lift-exprs (rest expr)))
-         `(reactor.core/apply ~(first expr) ~@(lift-exprs (rest expr)))) ; regular function application
+         (lift-fn-expr expr)) ; regular function application
        (case expr
          <S> (symbol "<S>")
          `(as-signal ~expr))))  ;; no list, make sure it's a signal

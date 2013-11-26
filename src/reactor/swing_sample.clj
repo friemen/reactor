@@ -63,22 +63,24 @@
   []
   (let [s (stage "FRP Sample 3")
         startpos (location 150 100)
-        clickposE (->> s :mouse-events
-                       (r/filter button-clicked?)
-                       (r/map #((juxt :x :y) %)))
-        clickpos (->> clickposE (r/hold startpos))
+        clickposE (r/eventsource)
+        clickpos (r/signal startpos)
         sa (r/signal (speed-angle 0 0))
         circlepos (r/signal startpos)
-        circlepos-on-click (->> clickposE
-                                (r/snapshot circlepos)
-                                (r/hold startpos))
         shapes (r/signal [])]
+    (-> clickposE (r/follows
+                   (->> s :mouse-events
+                        (r/filter button-clicked?)
+                        (r/map #((juxt :x :y) %)))))
     (-> sa (r/follows
             (r/lift startpos (speed-angle 5 (angle
-                                             circlepos-on-click
-                                             clickpos)))))
+                                             (->> clickposE
+                                                  (r/snapshot circlepos)
+                                                  (r/hold startpos))
+                                             (->> clickposE (r/hold startpos)))))))
     (-> circlepos (r/follows
                    (r/lift startpos (loc+ circlepos (motion sa)))))
     (-> s :scene (r/follows
-                  (r/lift [] (vector (move (circle 10) circlepos)))))
+                  (r/lift [] (-> (circle 10) (move circlepos) vector))))
     s))
+

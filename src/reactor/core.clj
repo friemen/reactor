@@ -58,11 +58,16 @@
 
 
 ;; -----------------------------------------------------------------------------
+;; the propagation engine
+
+(defonce engine (atom nil))
+(def ^:dynamic *auto-execute* 10)
+(defonce executor (atom nil))
+
 
 (declare signal lagged-signal time elapsed-time
          as-occ exceptions eventsource lift
          register! setv! enqueue!)
-
 
 ;; -----------------------------------------------------------------------------
 ;; time utilities
@@ -272,7 +277,6 @@
     newes))
 
 
-
 ;; -----------------------------------------------------------------------------
 ;; combinators for signals
 
@@ -460,7 +464,7 @@
        (contains? #{#'reactor.core/hold #'reactor.core/signal #'reactor.core/switch #'reactor.core/reduce #'reactor.core/reduce-t #'reactor.core/behind #'reactor.core/lift #'reactor.core/apply})))
 
 
-(defn- lift-fn-expr
+(defn- lift-invocation-expr
   [expr]
   (cond
    (yields-signal? expr) expr
@@ -470,27 +474,55 @@
            -> `(thread-2nd* ~@(lift-threaded-exprs (rest expr)))
            `(reactor.core/apply ~(first expr) ~@(lift-exprs (rest expr))))))
 
+;; TODO how to handle a (fn ) expression?
+;;   It is applied by a HOF like map, reduce or friends
+;;   Parameters are always values, not signals
+;;   Closed over symbols may point to signals or not
+;;   If a symbol is a signal its value has to be taken
+;;   
+
+
+#_(defn- value
+  [s]
+  (if (satisfies? Signal s) (getv s) s))
+
+#_(defn- wrap-in-value
+  [locals expr]
+  (cons (first expr) (c/map #(cond
+                              (list? %) (wrap-in-value locals %)
+                              (or (number? %) (string? %)) %
+                              :else (list 'value %))
+                            (rest expr))))
+
+#_(defn- lift-fn-expr
+  [expr]
+  (let [[fn params & body] expr
+        locals (set params)
+        ]
+    ))
+
+;; end TODO
 
 (defn- lift-expr
   [expr]
-     (if (list? expr)
-       (case (first expr)
-         let (let [[_ bindings & exprs] expr
-                   lifted-bindings (->> bindings
-                                        (partition 2)
-                                        (mapcat (fn [[s expr]] [s (lift-expr expr)]))
-                                        vec)]
-               `(let ~lifted-bindings ~@(lift-exprs exprs)))
-         if (let [[_ c t f] expr]
-              `(if* ~(lift-expr c)
-                    ~(lift-expr t)
-                    ~(if f (lift-expr f) (lift-expr nil))))
-         or `(or* ~@(lift-exprs (rest expr)))
-         and `(and* ~@(lift-exprs (rest expr)))
-         (lift-fn-expr expr)) ; regular function application
-       (case expr
-         <S> (symbol "<S>")
-         `(as-signal ~expr))))  ;; no list, make sure it's a signal
+  (if (list? expr)
+    (case (first expr)
+      let (let [[_ bindings & exprs] expr
+                lifted-bindings (->> bindings
+                                     (partition 2)
+                                     (mapcat (fn [[s expr]] [s (lift-expr expr)]))
+                                     vec)]
+            `(let ~lifted-bindings ~@(lift-exprs exprs)))
+      if (let [[_ c t f] expr]
+           `(if* ~(lift-expr c)
+                 ~(lift-expr t)
+                 ~(if f (lift-expr f) (lift-expr nil))))
+      or `(or* ~@(lift-exprs (rest expr)))
+      and `(and* ~@(lift-exprs (rest expr)))
+      (lift-invocation-expr expr)) ; regular function application
+    (case expr
+      <S> (symbol "<S>")
+      `(as-signal ~expr))))  ;; no list, make sure it's a signal
 
 
 (defmacro lift
@@ -542,8 +574,8 @@
 
 (defrecord DefaultSignal [role value-atom updated-atom executor ps]
   Signal
-  (getv [_]
-    @value-atom)
+  (getv [sig]
+    (or (-> engine deref :pending-values (get sig)) @value-atom))
   (last-updated [sig]
     @updated-atom))
 
@@ -565,8 +597,8 @@
 
 (defrecord LaggedSignal [role lag value-ref q-ref executor ps]
   Signal
-  (getv [_]
-    (first @value-ref))
+  (getv [sig]
+    (or (-> engine deref :pending-values (get sig)) (first @value-ref)))
   (last-updated [sig]
     (second @value-ref)))
 
@@ -805,11 +837,6 @@
 
 (declare execute!)
 
-(defonce engine (atom nil))
-(def ^:dynamic *auto-execute* 10)
-(defonce executor (atom nil))
-
-
 
 (defn pr-reactive
   "Returns a text representation of a signal or event source."
@@ -867,6 +894,7 @@
                   :cycles 0
                   :pending-queue []
                   :execution-queue (priority-map-by (comparator before))
+                  :pending-values {}
                   :heights {}
                   :execution-level Integer/MAX_VALUE}))
 
@@ -927,6 +955,15 @@
          m))))
 
 
+(defn- make-entry
+  "Creates an entry for the pending or execution queue of the engine."
+  [no height react new-value]
+  {:no no
+   :height height
+   :reactive react
+   :value new-value})
+
+
 (defn enqueue
   "Add the value/occurence x for the reactive either to the execution-queue
    (if it is active, the reactive is reachable and 'downstream'
@@ -940,11 +977,12 @@
          rhm :heights
          exl :execution-level} eng
          h (get rhm react)
-        entry {:no no :height h :reactive react :value x}]
+        entry (make-entry no h react x)]
     (-> (if (or (empty? exq) (nil? h) (<= exl h))
           (assoc eng :pending-queue (conj pq entry))
           (assoc eng :execution-queue (conj exq [entry {:no no :height h}])))
-        (assoc :next-no (inc no)))))
+        (assoc :next-no (inc no))
+        (assoc-in [:pending-values react] x))))
 
 
 (defn begin
@@ -971,10 +1009,12 @@
    the execution level."
   [eng]
   (let [exq (:execution-queue eng)
-        exl (or (-> exq peek first :height) Integer/MAX_VALUE)]
+        entry (-> exq peek first)
+        exl (or (:height entry) Integer/MAX_VALUE)]
     (assoc eng
       :execution-queue (if (empty? exq) exq (pop exq))
-      :execution-level exl)))
+      :execution-level exl
+      :pending-values (dissoc (:pending-values eng) (:reactive entry)))))
 
 
 (defn propagate!

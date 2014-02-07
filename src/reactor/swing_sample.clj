@@ -8,6 +8,12 @@
            [java.awt.event MouseListener MouseMotionListener]))
 
 
+; in the REPL try
+;   (start! sample1)
+;   (start! sample2)
+;   (start! sample3)
+
+
 ;; ------------------------------------------------------------------------
 ;; Sample 1
 
@@ -83,4 +89,3 @@
     (-> s :scene (r/follows
                   (r/lift [] (-> (circle 10) (move circlepos) vector))))
     s))
-

@@ -84,13 +84,15 @@
 ;; representation of locations
 
 (defn discrete
-  "Rounds n half-up and returns an int."
+  "Number -> Integer
+  Rounds n half-up and returns an int."
   [n]
   (int (Math/round n)))
 
 
 (defn motion
-  "Returns a discretized motion vector [dx dy] from a speed-angle map."
+  "Map -> [Integer Integer]
+  Returns a discretized motion vector [dx dy] from a speed-angle map."
   [{s :speed a :angle}]
   (let [d (* Math/PI (/ a 180))]
     (vector (-> (Math/cos d) (* s) discrete)
@@ -102,13 +104,21 @@
   (vector (f (first loc2) (first loc1))
           (f (second loc2) (second loc1))))
 
-(def loc- (partial loc-op -))
-(def loc+ (partial loc-op +))
+(def loc-
+  "[Number Number] [Number Number] -> [Number Number]
+  Returns the difference of two 2D locations."
+  (partial loc-op -))
+(def loc+
+  "[Number Number] [Number Number] -> [Number Number]
+  Returns the sum of two 2D locations."
+  (partial loc-op +))
 
 
 (defn speed-angle
-  "If used with two arguments returns a map of the given speed and angle values.
-   If used with one argument returns a 360 based angle from a diff of two locations."
+  "Number Number -> Map
+  [Number Number] -> Map
+  If used with two arguments returns a map of the given speed and angle values.
+  If used with one argument returns a 360 based angle from a diff of two locations."
   ([speed angle]
      {:speed speed :angle angle})
   ([ld]
@@ -123,18 +133,23 @@
         :speed h})))
 
 (defn angle
+  "Location Location -> Number
+  Returns the angle of a vector pointing from 2D locations loc1 to loc2."
   [loc1 loc2]
   (-> (loc- loc1 loc2) speed-angle :angle))
 
 (defn distance
-  "Returns the distance of a location diff or two locations."
+  "[Number Number] -> Number
+  Number Number -> Number
+  Returns the distance from a location diff vector [dx dy] or from two locations."
   ([ld]
      (-> ld speed-angle :speed))
   ([loc1 loc2]
      (-> (loc- loc1 loc2) distance)))
 
 (defn location
-  "Returns a vector [x y] that represents a 2D location."
+  "Number Number -> [Number Number]
+  Returns a vector [x y] that represents a 2D location."
   [x y]
   (vector x y))
 

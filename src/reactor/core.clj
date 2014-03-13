@@ -29,10 +29,10 @@
 (defprotocol Reactive
   (subscribe [react follower f]
     "Subscribes a one-argument listener function. The follower is a reactive
-     that is affected by side-effects that the listener function has.
-     In case of an event source the listener fn is invoked with an Occurence instance.
-     In case of a signal the listener fn is invoked with the a pair [old-value new-value]
-     of the signal.")
+    that is affected by side-effects that the listener function has.
+    In case of an event source the listener fn is invoked with an Occurence instance.
+    In case of a signal the listener fn is invoked with the a pair [old-value new-value]
+    of the signal.")
   (unsubscribe [react follower]
     "Removes the follower and its listener fn from the list of followers.")
   (followers [react]
@@ -41,8 +41,8 @@
     "Returns a keyword denoting the functional role of the reactive.")
   (publish! [react x]
     "Takes over the given value/occurrence x and publishes it to all followers.
-     An event source will propagate the Occurence instance,
-     a signal will propagate a pair [old-value new-value]."))
+    An event source will propagate the Occurence instance,
+    a signal will propagate a pair [old-value new-value]."))
 
 
 (defprotocol Signal
@@ -83,8 +83,8 @@
 
 (defn pass
   "Creates a reactive of the same type as the given reactive.
-   Uses the specified executor to handle the event or value propagation in a different thread.
-   See also protocol Executor in ns reactor.execution."
+  Uses the specified executor to handle the event or value propagation in a different thread.
+  See also protocol Executor in ns reactor.execution."
   [executor react]
   (cond
    (satisfies? Signal react)
@@ -99,9 +99,9 @@
 
 (defn react-with
   "Subscribes f as listener to the reactive and returns it.
-   In case of an event source the function f receives the occurence as argument.
-   In case of a signal the function f receives a pair [old-value new-value] as argument.
-   Any return value of f is discarded."
+  In case of an event source the function f receives the occurence as argument.
+  In case of a signal the function f receives a pair [old-value new-value] as argument.
+  Any return value of f is discarded."
   [f react]
   (subscribe react nil f))
 
@@ -109,10 +109,10 @@
 
 (defn as-signal
   "Returns the given argument, if it is already a signal.
-   If the given argument is an event source, returns a new
-   signal that stores the last event as value. The initial
-   value of the new signal is nil.
-   Otherwise returns a signal that contains the argument as value."
+  If the given argument is an event source, returns a new
+  signal that stores the last event as value. The initial
+  value of the new signal is nil.
+  Otherwise returns a signal that contains the argument as value."
   [sig-or-val]
   (cond
    (satisfies? Signal sig-or-val)
@@ -124,7 +124,7 @@
 
 (defn follows
   "Connects destination reactive with source reactive, so that destination reactive always has
-   the same value / occurence as source reactive."
+  the same value / occurence as source reactive."
   [dst-react src-react]
   (let [code (fn [react]
                (cond (satisfies? EventSource react) "E"
@@ -155,12 +155,12 @@
 
 (defn map
   "Creates a new event source that raises an event
-   whenever the given event source raises an event. The new
-   event is created by applying a transformation to the original
-   event.
-   If the transform-fn-or-value parameter evaluates to a function
-   it is invoked with the original event as argument. Otherwise
-   the second argument is raised as the new event."
+  whenever the given event source raises an event. The new
+  event is created by applying a transformation to the original
+  event.
+  If the transform-fn-or-value parameter evaluates to a function
+  it is invoked with the original event as argument. Otherwise
+  the second argument is raised as the new event."
   [transform-fn-or-value evtsource]
   (let [newes (eventsource :map)]
     (subscribe evtsource
@@ -176,7 +176,7 @@
 
 (defn filter
   "Creates a new event source that only raises an event
-   when the predicate returns true for the original event."
+  when the predicate returns true for the original event."
   [pred evtsource]
   (let [newes (eventsource :filter)]
     (subscribe evtsource newes #(when (pred (:event %))
@@ -186,32 +186,32 @@
 
 (defn remove
   "Creates a new event source that suppresses forwarding of
-   an event when the predicate returns true for the original event."
+  an event when the predicate returns true for the original event."
   [pred evtsource]
   (filter (complement pred) evtsource))
 
 
 (defn delay
   "Creates an event source that receives occurences delayed by
-   msecs milliseconds from the given event source."
+  msecs milliseconds from the given event source."
   [msecs evtsource]
   (->> evtsource (pass (x/delayed-executor msecs))))
 
 
 (defn calm
   "Creates an event source that receives occurences delayed by
-   msecs milliseconds from the given event source. When a subsequent
-   event arrives before a current event is propagated the current event
-   is omitted and the delay starts from the beginning for the
-   new event."
+  msecs milliseconds from the given event source. When a subsequent
+  event arrives before a current event is propagated the current event
+  is omitted and the delay starts from the beginning for the
+  new event."
   [msecs evtsource]
   (->> evtsource (pass (x/calmed-executor msecs))))
 
 
 (defn merge
   "Produces a new event source from others, so that the
-   new event source raises an event whenever one of the
-   specified sources raises an event."
+  new event source raises an event whenever one of the
+  specified sources raises an event."
   [& evtsources]
   (let [newes (eventsource :merge)]
     (doseq [es evtsources]
@@ -221,8 +221,8 @@
 
 (defn switch
   "Creates a signal that initially follows the given signal sig.
-   Upon any occurence of the given event source the signal switches to
-   follow the signal that the occurence contained."
+  Upon any occurence of the given event source the signal switches to
+  follow the signal that the occurence contained."
   [sig-or-value evtsource]
   (let [sig (as-signal sig-or-value)
         newsig (signal :switch (getv sig))
@@ -239,9 +239,9 @@
 
 (defn reduce-t
   "Creates a signal from an event source. On each event
-   the given 2-arg function is invoked with the current signals
-   value as first and the occurence as second parameter.
-   The result of the function is set as new value of the signal."
+  the given 2-arg function is invoked with the current signals
+  value as first and the occurence as second parameter.
+  The result of the function is set as new value of the signal."
   ([f evtsource]
      (reduce-t f nil))
   ([f initial-value evtsource]
@@ -257,9 +257,9 @@
 
 (defn reduce
   "Creates a signal from an event source. On each event
-   the given 2-arg function is invoked with the current signals
-   value as first and the event as second parameter.
-   The result of the function is set as new value of the signal."
+  the given 2-arg function is invoked with the current signals
+  value as first and the event as second parameter.
+  The result of the function is set as new value of the signal."
   ([f evtsource]
      (reduce f nil))
   ([f initial-value evtsource]
@@ -270,7 +270,7 @@
 
 (defn snapshot
   "Creates an event source that takes the value of the signal sig whenever
-   the given event source raises an event."
+  the given event source raises an event."
   [sig evtsource]
   (let [newes (eventsource :snapshot)]
     (subscribe evtsource newes (fn [_] (raise-event! newes (getv sig))))
@@ -283,7 +283,7 @@
 
 (defn behind
   "Creates a signal from an existing signal that reflects the values
-   with the specified lag."
+  with the specified lag."
   ([sig]
      (behind 1 sig))
   ([lag sig]
@@ -294,12 +294,12 @@
 
 (defn changes
   "Creates an event source from a signal so that an event is raised
-   whenever the signal value changes. The event is a pair [old-value new-value].
-   If the fn-or-val argument
-   evaluates to a function, then it is applied to the signals
-   new value. An event is raised when the function returns a non-nil
-   result. If fn-or-val is not a function it is assumed to be the
-   event that will be raised on signal value change."
+  whenever the signal value changes. The event is a pair [old-value new-value].
+  If the fn-or-val argument
+  evaluates to a function, then it is applied to the signals
+  new value. An event is raised when the function returns a non-nil
+  result. If fn-or-val is not a function it is assumed to be the
+  event that will be raised on signal value change."
   ([sig]
      (changes identity sig))
   ([f sig]
@@ -343,9 +343,9 @@
 
 (defn bind!
   "Connects n input-signals with one output-signal so that on
-   each change of an input signal value the value of the output signal
-   is re-calculated by the function f. Function f must accept n
-   arguments and must a single value."
+  each change of an input signal value the value of the output signal
+  is re-calculated by the function f. Function f must accept n
+  arguments and must a single value."
   [output-sig f input-sigs]
   (let [calc-outputs (fn []
                        (let [input-values (c/map getv input-sigs)
@@ -368,7 +368,7 @@
 
 (defn apply*
   "Creates a signal that is updated by applying the n-ary function
-   f to the values of the input signals whenever one value changes."
+  f to the values of the input signals whenever one value changes."
   [f sigs]
   (let [newsig (signal :apply 0)]
     (bind! newsig f (c/map as-signal sigs))
@@ -377,14 +377,14 @@
 
 (defn apply
   "Creates a signal that is updated by applying the n-ary function
-   f to the values of the input signals whenever one value changes."
+  f to the values of the input signals whenever one value changes."
   [f & sigs]
   (apply* f sigs))
 
 
 (defn if*
   "Creates a signal that contains the value of t-sig if cond-sig contains
-   true, otherwise the value of f-sig."
+  true, otherwise the value of f-sig."
   [cond-sig t-sig f-sig]
   (let [newsig (signal :if nil)
         switch-fn (fn [[old new]] (setv! newsig (if new (getv t-sig) (getv f-sig))))
@@ -527,11 +527,12 @@
 
 (defmacro lift
   "Macro that takes an expr, lifts it (and all subexpressions) and
-   returns a signal that changes whenever a value of the signals of the
-   sexpr changes.
-   Supports in addition to application of regular functions the following
-   subset of Clojure forms:
-      if, or, and, let, -> and ->>"
+  returns a signal that changes whenever a value of the signals of the
+  sexpr changes.
+  Supports in addition to application of regular functions the following
+  subset of Clojure forms:
+     if, or, and, let, -> and ->>
+  To use the new signal in the expr use the symbol <S>."
   ([expr]
      `(lift 0 ~expr))
   ([initial-value expr]
@@ -543,8 +544,8 @@
 
 (defn process-with
   "Connects a n-ary function to n input signals so that the function is
-   executed whenever one of the signals changes its value. The output of the
-   function execution is discarded. Instead returns the input signals."
+  executed whenever one of the signals changes its value. The output of the
+  function execution is discarded. Instead returns the input signals."
   [f & input-sigs]
   (bind! nil f (vec input-sigs))
   (if (= 1 (count input-sigs)) (first input-sigs) (vec input-sigs)))
@@ -700,7 +701,7 @@
 
 (defn lagged-signal
   "Creates a new lagged signal that reflect values with a lag.
-   A lag of 0 means the value that was setv! is directly available via getv."
+  A lag of 0 means the value that was setv! is directly available via getv."
   ([lag initial-value]
      (lagged-signal :signal x/current-thread lag initial-value))
   ([role lag initial-value]
@@ -721,8 +722,8 @@
 
 (defn elapsed-time
   "Returns a new signal that keeps the elapsed time of the last update of
-   the given signal, and propagates the elapsed time on every change of the
-   given time signal."
+  the given signal, and propagates the elapsed time on every change of the
+  given time signal."
   ([sig]
      (elapsed-time :signal sig))
   ([role sig]
@@ -781,7 +782,7 @@
 
 (defn dispose!
   "Marks the given reactive as disposed. The next call to unlink! will
-   remove the reactive from all other reactives that it follows."
+  remove the reactive from all other reactives that it follows."
   [react]
   (when-not ((:active default-reactives) react)
     (swap! reactives #(let [{as :active
@@ -797,9 +798,9 @@
 
 (defn unlink!
   "Unsubscribes all followers marked as disposed from reactives
-   that propagate to the disposed reactives.
-   Event sources that don't have any followers left will also
-   be marked as disposed."
+  that propagate to the disposed reactives.
+  Event sources that don't have any followers left will also
+  be marked as disposed."
   []
   (swap! reactives #(let [{ds :disposed
                            as :active} %
@@ -878,8 +879,8 @@
 
 (defn- before
   "Returns true, if e1 has to be processed before e2. The order of processing depends
-   1. on the height: e1 is before e2 if height e1 > height e2
-   2. on the order of arrival in the queue"
+  1. on the height: e1 is before e2 if height e1 > height e2
+  2. on the order of arrival in the queue"
   [e1 e2]
   (if (= (:height e1) (:height e2))
     (< (:no e1) (:no e2))
@@ -911,9 +912,9 @@
 
 (defn start-engine!
   "Start the engine for scheduled execution with the given resolution
-   as delay between execution cycles.
-   Sets var *auto-execute* to 0 which inhibits any implicit propagation
-   after enqueue."
+  as delay between execution cycles.
+  Sets var *auto-execute* to 0 which inhibits any implicit propagation
+  after enqueue."
   ([]
      (start-engine! 50))
   ([resolution]
@@ -928,12 +929,12 @@
 
 (defn heights
   "Returns a map {reactive->height} for all reactives
-   that are reachable by the given seq of reactives.
-   Links between reactives that create cycles are omitted, so the
-   graph of reachable reactives is treated as a tree.
-   The 'height' of a reactive denotes the length of the longest
-   path to a leaf of this tree. A leaf has height 0.
-   'Reactive t follows reactive s' implicates 'height s > height t'"
+  that are reachable by the given seq of reactives.
+  Links between reactives that create cycles are omitted, so the
+  graph of reachable reactives is treated as a tree.
+  The 'height' of a reactive denotes the length of the longest
+  path to a leaf of this tree. A leaf has height 0.
+  'Reactive t follows reactive s' implicates 'height s > height t'"
   ([reacts]
      (heights reacts {}))
   ([reacts rhm]
@@ -966,9 +967,9 @@
 
 (defn enqueue
   "Add the value/occurence x for the reactive either to the execution-queue
-   (if it is active, the reactive is reachable and 'downstream'
-   compared to the current execution-level). Otherwise the entry is added to
-   the pending-queue."
+  (if it is active, the reactive is reachable and 'downstream'
+  compared to the current execution-level). Otherwise the entry is added to
+  the pending-queue."
   [eng react x]
   #_(println "ENQUEUING" x "FOR" (pr-reactive react))
   (let [{no :next-no
@@ -987,8 +988,8 @@
 
 (defn begin
   "Takes all entries from pending-queue, calculates the height in
-   the graph of reachable reactives and inserts them into the
-   execution-queue."
+  the graph of reachable reactives and inserts them into the
+  execution-queue."
   [eng]
   (let [es (:pending-queue eng)
         rhm (heights (c/map :reactive es))
@@ -1006,7 +1007,7 @@
 
 (defn update
   "Removes the first entry from the execution-queue and adapts
-   the execution level."
+  the execution level."
   [eng]
   (let [exq (:execution-queue eng)
         entry (-> exq peek first)
@@ -1019,8 +1020,8 @@
 
 (defn propagate!
   "Fills the execution-queue from the pending-queue.
-   Repeats publish! for first entry of the execution-queue as long
-   as the execution-queue is not empty."
+  Repeats publish! for first entry of the execution-queue as long
+  as the execution-queue is not empty."
   []
   (try (loop [eng (swap! engine begin)]
          (when-let [e (-> eng :execution-queue peek first)]
@@ -1031,7 +1032,7 @@
 
 (defn execute!
   "Publishes new time values and calls propagate!, handles errors
-   by sending them to the exceptions event source."
+  by sending them to the exceptions event source."
   []
   (do (publish! etime (/ (- (now) (getv time)) 1000))
            (publish! time (now))
@@ -1041,9 +1042,9 @@
 
 (defn enqueue!
   "Adds an update entry for the given reactive and value x
-   to either the execution queue or the pending queue.
-   The var *auto-execute* specifies the number of automatic
-   propagations (useful for REPL usage and unit tests)."
+  to either the execution queue or the pending queue.
+  The var *auto-execute* specifies the number of automatic
+  propagations (useful for REPL usage and unit tests)."
   [react x]
   (let [stopped? (-> @engine :execution-queue empty?)]
     (swap! engine #(enqueue % react x))

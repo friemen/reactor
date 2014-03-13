@@ -44,28 +44,28 @@
 
 (defn executor
   "Creates an executor that - upon schedule - executes a function
-   in a different thread. A subsequent call to schedule will not
-   cancel already scheduled functions."
+  in a different thread. A subsequent call to schedule will not
+  cancel already scheduled functions."
   []
   (SimpleExecutor. 0 false (atom nil)))
 
 
 (defn delayed-executor
   "Creates an executor that -upon schedule - executes a function
-   in a different thread after waiting for the amount
-   of milliseconds specified by delay.
-   A subsequent call to schedule will not cancel already
-   scheduled functions."
+  in a different thread after waiting for the amount
+  of milliseconds specified by delay.
+  A subsequent call to schedule will not cancel already
+  scheduled functions."
   [delay]
   (SimpleExecutor. delay false (atom nil)))
 
 
 (defn calmed-executor
   "Creates an executor that - upon schedule - executes a function in a
-   different thread after waiting for the amount
-   of milliseconds specified by delay.
-   A subsequent call to schedule will cancel the function
-   that has been scheduled before."
+  different thread after waiting for the amount
+  of milliseconds specified by delay.
+  A subsequent call to schedule will cancel the function
+  that has been scheduled before."
   [delay]
   (SimpleExecutor. delay true (atom nil)))
 
@@ -84,9 +84,9 @@
 
 (defn timer-executor
   "Create a scheduled executor that - upon schedule -
-   periodically executes the given function. A subsequent
-   call to schedule will stop the previous function from
-   being executed."
+  periodically executes the given function. A subsequent
+  call to schedule will stop the previous function from
+  being executed."
   [period]
   (TimerExecutor. period (atom nil)))
 

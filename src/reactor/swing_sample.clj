@@ -23,11 +23,11 @@
         direction (->> s :mouse-events
                        (r/filter button-clicked?)
                        (r/reduce (fn [d evt] (* d -1)) 1))
-        speed (r/signal 10)
+        speed (r/signal 20)
         x (r/signal 100)
         y (r/lift (+ <S> (* direction speed r/etime)))]
-    (-> s :scene (r/follows (r/lift (vector (move (circle 30) x y)
-                                            (move (circle 10) x 100)))))
+    (-> s :scene (r/follows (r/lift (vector (-> (circle 30) (move x y))
+                                            (-> (circle 10) (move x 100))))))
     s))
 
 

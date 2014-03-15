@@ -10,6 +10,15 @@ is to enable declarative specifications of event and signal
 processing chains (using the ->> macro and familiar functions
 like filter, map or merge).
 
+To use it add the following dependency to your project.clj
+
+```clojure
+[reactor "0.5.ALPHA1"]
+```
+
+The API is still subject to change.
+
+
 Concepts
 --------
 
@@ -82,7 +91,7 @@ Further examples:
 
 Current state
 -------------
-This library is currently purely experimental stuff.
+This library is currently experimental.
 The goal for now is to produce an API that supports the formulation of FRP-based solutions.
 
 - There already is a rich set of **combinators** on signals and event sources.

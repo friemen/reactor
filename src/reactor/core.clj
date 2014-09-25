@@ -1,1056 +1,1198 @@
 (ns reactor.core
-  "Factories and combinators for FRP style signals and event sources."
-  (:refer-clojure :exclude [apply delay filter merge map reduce remove time])
-  (:require [reactor.propagation :as p]
-            [reactor.execution :as x]
-            [clojure.core :as c]
-            [clojure.set]
-            [clojure.data.priority-map :refer [priority-map priority-map-by]]))
-
-;; Concepts:
-;; An event is something non-continuous that "happens".
-;; 
-;; An occurence is a pair [event timestamp].
-;; 
-;; An event source publishes occurences to subscribers.
-;; 
-;; A signal (a.k.a behaviour) is a value that possibly changes over time.
-;; 
-;; A reactive is an abstraction over event source and signal.
-;; 
-;; A follower is a function or reactive that is affected by events or value changes.
-
-
-;; -----------------------------------------------------------------------------
-;; types
-
-(defrecord Occurence [event timestamp])
-
-(defprotocol Reactive
-  (subscribe [react follower f]
-    "Subscribes a one-argument listener function. The follower is a reactive
-    that is affected by side-effects that the listener function has.
-    In case of an event source the listener fn is invoked with an Occurence instance.
-    In case of a signal the listener fn is invoked with the a pair [old-value new-value]
-    of the signal.")
-  (unsubscribe [react follower]
-    "Removes the follower and its listener fn from the list of followers.")
-  (followers [react]
-    "Returns reactives that follow this reactive.")
-  (role [react]
-    "Returns a keyword denoting the functional role of the reactive.")
-  (publish! [react x]
-    "Takes over the given value/occurrence x and publishes it to all followers.
-    An event source will propagate the Occurence instance,
-    a signal will propagate a pair [old-value new-value]."))
+  "Factories and combinators for behaviors and eventstreams."
+  (:refer-clojure :exclude [concat count delay distinct drop drop-while
+                            drop-last filter into merge map mapcat reduce
+                            remove some swap! take take-last take-while])
+  (:require [clojure.core :as c]
+            [clojure.string :as s]
+            [reactnet.scheduler :as sched]
+            [reactnet.reactives]
+            [reactnet.executors]
+            [reactnet.debug :as dbg]
+            [reactnet.core :as rn
+             :refer [add-links! broadcast-value completed? default-link-fn
+                     enq enqueue-values execute fvalue link-inputs
+                     link-outputs make-link make-network *netref* now on-error
+                     reactive? remove-links! scheduler single-value values zip-values]
+             :exclude [push! complete!]]
+            [reactnet.netrefs :refer [agent-netref]])
+  (:import [clojure.lang PersistentQueue]
+           [reactnet.reactives Behavior Eventstream Seqstream Fnbehavior]
+           [reactnet.executors FutureExecutor]))
 
 
-(defprotocol Signal
-  (getv [sig]
-    "Returns the current value of this signal.")
-  (last-updated [sig]
-    "Returns the absolute timestamp of the last publish!"))
+;; TODOS
+;; - Invent marker protocol to support behavior? and eventstream? regardless of impl class
+;; - err-retry --> support "exponential backoff"
+;; - allow reference to defined behavior in lift
+;;   (by first letting and passing the resulting behavior to lift-* functions)
 
 
-(defprotocol EventSource
-  (raise-event! [evtsource evt]
-    "Sends a new event."))
+(alter-var-root #'reactnet.core/*netref*
+                (fn [_]
+                  (agent-netref (make-network "default" []))))
 
 
-;; -----------------------------------------------------------------------------
-;; the propagation engine
+;; ---------------------------------------------------------------------------
+;; Factories / Predicates
 
-(defonce engine (atom nil))
-(def ^:dynamic *auto-execute* 10)
-(defonce executor (atom nil))
-
-
-(declare signal lagged-signal time elapsed-time
-         as-occ exceptions eventsource lift
-         register! setv! enqueue!)
-
-;; -----------------------------------------------------------------------------
-;; time utilities
-
-(defn now
-  []
-  "Returns System/currentTimeMillis."
-  (System/currentTimeMillis))
+(defn behavior
+  "Returns a new behavior. 
+  It can have an optional label passed via the :label key."
+  ([value]
+     (behavior value :label (str (gensym "b"))))
+  ([_ label]
+     (behavior nil :label label))
+  ([value _ label]
+     (Behavior. label
+                (atom [value (now)])
+                (atom true)
+                (atom true))))
 
 
-;; -----------------------------------------------------------------------------
-;; common functions for reactives (signals and event sources)
+(defn behavior?
+  "Returns true if r is a behavior."
+  [r]
+  (or (instance? Behavior r)
+      (instance? Fnbehavior r)))
 
-(defn pass
-  "Creates a reactive of the same type as the given reactive.
-  Uses the specified executor to handle the event or value propagation in a different thread.
-  See also protocol Executor in ns reactor.execution."
-  [executor react]
+
+(defn eventstream
+  "Returns a new eventstream.
+  It can have an optional label passed via the :label key."
+  [& {:keys [label] :or {label (str (gensym "e"))}}]
+  (Eventstream. label
+                (atom {:queue (PersistentQueue/EMPTY)
+                       :last-occ nil
+                       :completed false})
+                5000))
+
+
+(defn eventstream?
+  "Returns true if r is an eventstream."
+  [r]
+  (or (instance? Eventstream r)
+      (instance? Seqstream r)))
+
+
+;; ---------------------------------------------------------------------------
+;; Push! Complete! Reset
+
+
+(defn network
+  "Creates a new network with an optional id. 
+  If the id is omitted a gensym is used."
+  ([]
+     (network (str (gensym "network"))))
+  ([id]
+     (agent-netref
+      (make-network id []))))
+
+
+(defmacro with
+  "Changes the dynamic binding of var reactnet.core/*netref* to the
+  given network n."
+  [n & exprs]
+  `(binding [reactnet.core/*netref* ~n]
+     ~@exprs))
+
+
+(defmacro setup-network
+  "Takes an id and a vector of symbol-expr bindings, creates a new
+  network, puts the binding pairs in a let and returns a map that
+  contains the symbols as keys and the values of the expressions as
+  values.  The expressions are evaluated in a with-context (i.e. the
+  new network is dynamically bound to reactnet.core/*netref*).  
+  An additional :netref key in the resulting map points to the new network."
+  [id & let-pairs]
+  `(with
+     (network ~id)
+     (let [~@let-pairs]
+       ~(let [let-pairs# (partition 2 let-pairs)]
+          `(assoc {:netref reactnet.core/*netref*}
+                 ~@(interleave
+                       (c/map (comp keyword first) let-pairs#)
+                       (c/map (comp symbol first) let-pairs#)))))))
+
+
+(defn push!
+  "Push a value to a reactive (or, pair-wise, many values to many reactives)."
+  ([r v]
+     (push! *netref* r v))
+  ([n r v & rvs]
+     (rn/push! n r v)
+     (doseq [[r v] (partition 2 rvs)]
+       (assert (reactive? r))
+       (rn/push! r v))
+     v))
+
+
+(defn complete!
+  "Complete the given reactives."
+  [& rs]
+  (doseq [r rs]
+    (rn/complete! r)))
+
+
+(defn reset-network!
+  "Remove all links and reactives from the network, cancel all
+  associated scheduled tasks."
+  ([]
+     (reset-network! *netref*))
+  ([n]
+     (-> n scheduler sched/cancel-all)
+     (rn/reset-network! n)))
+
+
+;; ---------------------------------------------------------------------------
+;; Misc internal utils
+
+(defn- unique-name
+  "Returns a unique name with the prefix s."
+  [s]
+  (str (gensym s)))
+
+
+(defn- countdown
+  "Returns a function that accepts any args and return n times true,
+  and then forever false."
+  [n]
+  (let [c (atom n)]
+    (fn [& args]
+      (<= 0 (c/swap! c dec)))))
+
+
+(defn- sample-fn
+  "If passed a function returns it wrapped in an exception handler.
+  If passed a IDeref (atom, agent, behavior, ...) returns a function that derefs it.
+  If passed any other value return (constantly value)."
+  [f-or-ref-or-value]
   (cond
-   (satisfies? Signal react)
-   (let [newsig (signal :signalpass executor nil)]
-     (subscribe react newsig (fn [[old new]] (setv! newsig new)))
-     newsig)
-   (satisfies? EventSource react)
-   (let [newes (eventsource :eventpass executor)]
-     (subscribe react newes #(raise-event! newes %))
-     newes)))
+   (fn? f-or-ref-or-value)
+   #(try (f-or-ref-or-value)
+         (catch Exception ex
+           (do (.printStackTrace ex)
+               ;; TODO what to push in case f fails?
+               ex)))
+   (instance? clojure.lang.IDeref f-or-ref-or-value)
+   #(deref f-or-ref-or-value)
+   :else
+   (constantly f-or-ref-or-value)))
 
 
-(defn react-with
-  "Subscribes f as listener to the reactive and returns it.
-  In case of an event source the function f receives the occurence as argument.
-  In case of a signal the function f receives a pair [old-value new-value] as argument.
-  Any return value of f is discarded."
-  [f react]
-  (subscribe react nil f))
-
-(declare hold)
-
-(defn as-signal
-  "Returns the given argument, if it is already a signal.
-  If the given argument is an event source, returns a new
-  signal that stores the last event as value. The initial
-  value of the new signal is nil.
-  Otherwise returns a signal that contains the argument as value."
-  [sig-or-val]
-  (cond
-   (satisfies? Signal sig-or-val)
-   sig-or-val
-   (satisfies? EventSource sig-or-val)
-   (hold sig-or-val)
-   :else (signal :constantly sig-or-val)))
+(defn- derive-new
+  "Creates, links and returns a new reactive which will complete if
+  the link to it is removed."
+  [factory-fn label inputs
+   & {:keys [link-fn complete-fn error-fn]
+      :or {link-fn default-link-fn}}]
+  {:pre [(seq inputs)]}
+  (let [new-r (factory-fn :label (unique-name label))]
+    (add-links! *netref* (make-link label inputs [new-r]
+                                    :link-fn link-fn
+                                    :complete-fn complete-fn
+                                    :error-fn error-fn
+                                    :complete-on-remove [new-r]))
+    new-r))
 
 
-(defn follows
-  "Connects destination reactive with source reactive, so that destination reactive always has
-  the same value / occurence as source reactive."
-  [dst-react src-react]
-  (let [code (fn [react]
-               (cond (satisfies? EventSource react) "E"
-                     (satisfies? Signal react) "S"
-                     :default (throw (IllegalArgumentException.
-                                      (str react " satisfies neither EventSource nor Signal.")))))
-        type (str (code dst-react) " <- " (code src-react))]
-    (subscribe src-react dst-react (case type
-                                     "E <- E" #(raise-event! dst-react %) 
-                                     "S <- S" #(setv! dst-react (second %)) 
-                                     "E <- S" #(raise-event! dst-react (second %))
-                                     "S <- E" #(setv! dst-react (:event %)))) 
-    type))
+(defn- safely-apply
+  "Applies f to xs, and catches exceptions.
+  Returns a pair of [result exception], at least one of them being nil."
+  [f xs]
+  (try [(apply f xs) nil]
+       (catch Exception ex [nil ex])))
 
 
-;; -----------------------------------------------------------------------------
-;; combinators for event sources
-
-(defn hold
-  "Creates a new signal that stores the last event as value."
-  ([evtsource]
-     (hold nil evtsource))
-  ([initial-value evtsource]
-     (let [newsig (signal :hold initial-value)]
-       (subscribe evtsource newsig #(setv! newsig (:event %)))
-       newsig)))
-
-
-(defn map
-  "Creates a new event source that raises an event
-  whenever the given event source raises an event. The new
-  event is created by applying a transformation to the original
-  event.
-  If the transform-fn-or-value parameter evaluates to a function
-  it is invoked with the original event as argument. Otherwise
-  the second argument is raised as the new event."
-  [transform-fn-or-value evtsource]
-  (let [newes (eventsource :map)]
-    (subscribe evtsource
-               newes
-               #(raise-event!
-                 newes
-                 (Occurence. (if (fn? transform-fn-or-value)
-                               (transform-fn-or-value (:event %))
-                               transform-fn-or-value)
-                             (:timestamp %))))
-    newes))
+(defn- make-result-map
+  "Input is a Result map as passed into a Link function. If the
+  exception ex is nil produces a broadcasting output-rvts, otherwise
+  adds the exception. Returns an updated Result map."
+  ([input value]
+     (make-result-map input value nil))
+  ([{:keys [output-reactives] :as input} value ex]
+     (assoc input 
+       :output-rvts (if-not ex (broadcast-value value output-reactives))
+       :exception ex)))
 
 
-(defn filter
-  "Creates a new event source that only raises an event
-  when the predicate returns true for the original event."
-  [pred evtsource]
-  (let [newes (eventsource :filter)]
-    (subscribe evtsource newes #(when (pred (:event %))
-                                  (raise-event! newes %)))
-    newes))
+(defn- make-link-fn
+  "Takes a function f and wraps it's synchronous execution so that
+  exceptions are caught and the return value is properly assigned to
+  all output reactives.
+
+  The optional result-fn is a function [Result Value Exception -> Result] 
+  that returns the input Result map with updated values for 
+  :output-rvts, :exception, :add, :remove-by, :no-consume entries.
+
+  Returns a link function."
+  ([f]
+     (make-link-fn f make-result-map))
+  ([f result-fn]
+     {:pre [f]}
+     (fn [{:keys [input-rvts] :as input}]
+       (let [[v ex] (safely-apply f (values input-rvts))]
+         (result-fn input v ex)))))
 
 
-(defn remove
-  "Creates a new event source that suppresses forwarding of
-  an event when the predicate returns true for the original event."
-  [pred evtsource]
-  (filter (complement pred) evtsource))
+(defn- unpack-fn-spec
+  "Returns a pair of [executor f]. If fn-spec is only a
+  function (instead of a map containing both) then [nil f] is
+  returned."
+  [{:keys [f executor] :as fn-spec}]
+  (if executor
+    [executor f]
+    [nil fn-spec]))
 
 
-(defn delay
-  "Creates an event source that receives occurences delayed by
-  msecs milliseconds from the given event source."
-  [msecs evtsource]
-  (->> evtsource (pass (x/delayed-executor msecs))))
+(defn- fn-spec?
+  "Returns true if f is either a function or a map containing a
+  function in an :f entry."
+  [f]
+  (or (instance? clojure.lang.IFn f)
+      (and (map? f) (instance? clojure.lang.IFn (:f f)))))
 
 
-(defn calm
-  "Creates an event source that receives occurences delayed by
-  msecs milliseconds from the given event source. When a subsequent
-  event arrives before a current event is propagated the current event
-  is omitted and the delay starts from the beginning for the
-  new event."
-  [msecs evtsource]
-  (->> evtsource (pass (x/calmed-executor msecs))))
+
+;; ---------------------------------------------------------------------------
+;; Enqueuing reactives and switching bewteen them
+
+(defn- make-reactive-queue
+  ([output]
+     (make-reactive-queue output nil))
+  ([output rs]
+     {:queue (vec rs)
+      :input nil
+      :output output}))
 
 
-(defn merge
-  "Produces a new event source from others, so that the
-  new event source raises an event whenever one of the
-  specified sources raises an event."
-  [& evtsources]
-  (let [newes (eventsource :merge)]
-    (doseq [es evtsources]
-      (subscribe es newes #(raise-event! newes %)))
-    newes))
+(defn- switch-reactive
+  [{:keys [queue input output] :as queue-state} q-atom]
+  (let [r           (first queue)
+        no-input?   (or (nil? input) (completed? input))]
+    (if (and r no-input?)
+      ;; a new r is available, and there is no current input or it is completed
+      {:output output
+       :queue  (vec (rest queue))
+       :input  r
+       :add    [(make-link "temp" [r] [output]
+                           :complete-fn
+                           (fn [l r]
+                             (c/merge (c/swap! q-atom switch-reactive q-atom)
+                                      {:remove-by #(= [r] (link-inputs %))
+                                       :allow-complete #{output}})))]}
+      ;; else, don't change anything
+      {:output output
+       :queue queue
+       :input input})))
 
 
-(defn switch
-  "Creates a signal that initially follows the given signal sig.
-  Upon any occurence of the given event source the signal switches to
-  follow the signal that the occurence contained."
-  [sig-or-value evtsource]
-  (let [sig (as-signal sig-or-value)
-        newsig (signal :switch (getv sig))
-        sig-listener (fn [[old new]] (setv! newsig new))
-        switcher (fn [{timestamp :timestamp evtsig :event}]
-                   {:pre [(instance? reactor.core.Signal evtsig)]}
-                   (unsubscribe sig newsig)
-                   (subscribe evtsig newsig sig-listener)
-                   (setv! newsig (getv evtsig)))]
-    (subscribe sig newsig sig-listener)
-    (subscribe evtsource newsig switcher)
-    newsig))
+(defn- enqueue-reactive
+  [queue-state q-atom r]
+  (assoc (switch-reactive (update-in queue-state [:queue] conj r) q-atom)
+    :dont-complete #{(:output queue-state)}))
 
 
-(defn reduce-t
-  "Creates a signal from an event source. On each event
-  the given 2-arg function is invoked with the current signals
-  value as first and the occurence as second parameter.
-  The result of the function is set as new value of the signal."
-  ([f evtsource]
-     (reduce-t f nil))
-  ([f initial-value evtsource]
-     (let [newsig (signal :reduce-t initial-value)]
-       (subscribe evtsource
-                  newsig
-                  #(setv! newsig (f (getv newsig)
-                                    (:event %)
-                                    (- (:timestamp %)
-                                       (or (last-updated newsig) (:timestamp %))))))
-       newsig)))
+;; ---------------------------------------------------------------------------
+;; Queue to be used with an atom or agent
+
+(defn- make-queue
+  [max-size]
+  {:queue (PersistentQueue/EMPTY)
+   :dequeued []
+   :max-size max-size})
 
 
-(defn reduce
-  "Creates a signal from an event source. On each event
-  the given 2-arg function is invoked with the current signals
-  value as first and the event as second parameter.
-  The result of the function is set as new value of the signal."
-  ([f evtsource]
-     (reduce f nil))
-  ([f initial-value evtsource]
-     (let [newsig (signal :reduce initial-value)]
-       (subscribe evtsource newsig #(setv! newsig (f (getv newsig) (:event %))))
-       newsig)))
+(defn- enqueue
+  [{:keys [queue dequeued max-size] :as q} v]
+  (if (>= (c/count queue) max-size)
+    (assoc q
+      :queue (conj (pop queue) v)
+      :dequeued [(first queue)])
+    (assoc q
+      :queue (conj queue v)
+      :dequeued [])))
 
 
-(defn snapshot
-  "Creates an event source that takes the value of the signal sig whenever
-  the given event source raises an event."
-  [sig evtsource]
-  (let [newes (eventsource :snapshot)]
-    (subscribe evtsource newes (fn [_] (raise-event! newes (getv sig))))
-    newes))
+(defn- dequeue
+  [{:keys [queue dequeued] :as q}]
+  (if-let [v (first queue)]
+    (assoc q
+      :queue (pop queue)
+      :dequeued [v])
+    (assoc q
+      :dequeued [])))
 
 
-;; -----------------------------------------------------------------------------
-;; combinators for signals
+(defn- dequeue-all
+  [{:keys [queue dequeued] :as q}]
+  (assoc q
+    :queue (empty queue)
+    :dequeued (vec queue)))
 
 
-(defn behind
-  "Creates a signal from an existing signal that reflects the values
-  with the specified lag."
-  ([sig]
-     (behind 1 sig))
-  ([lag sig]
-     (let [newsig (lagged-signal lag (getv sig))]
-       (subscribe sig newsig (fn [[old new]] (setv! newsig new)))
-       newsig)))
+;; ---------------------------------------------------------------------------
+;; More constructors of reactives
+
+
+(defn fnbehavior
+  "Returns a behavior that evaluates function f whenever a value is
+  requested."
+  [f]
+  (assoc (Fnbehavior. f)
+    :label (str f)))
+
+(declare seqstream)
+
+(defn just
+  "Returns an eventstream that evaluates x, provides the result and completes.
+
+  x can be: 
+  - an fn-spec with an arbitrary executor and a function f,
+  - a function that is executed synchronously, 
+  - an IDeref implementation, or 
+  - a value."
+  [{:keys [executor f] :as x}]
+  (let [new-r  (eventstream :label (unique-name "just"))
+        f      (sample-fn (if (and executor f) f x))
+        task-f (fn []
+                 (rn/push! new-r (f))
+                 (rn/push! new-r ::rn/completed))]
+    (if executor
+      (execute executor *netref* task-f)
+      (task-f))
+    new-r))
+
+
+(defn sample
+  "Returns an eventstream that repeatedly evaluates x with a fixed period.
+  The periodic task is cancelled when the eventstream is completed.
+
+  x can be: 
+  - an fn-spec with an arbitrary executor and a function f,
+  - a function that is executed synchronously, 
+  - an IDeref implementation, or 
+  - a value."
+  [millis {:keys [executor f] :as x}]
+  (let [netref  *netref*
+        s       (scheduler netref)
+        new-r   (eventstream :label (unique-name "sample"))
+        f       (sample-fn (if (and executor f) f x))
+        task    (atom nil)
+        push-f  (fn [] (if (completed? new-r)
+                         (sched/cancel @task)
+                         (rn/push! netref new-r (f))))
+        task-f  (if (and executor f)
+                  #(execute executor netref push-f)
+                  push-f)]
+    (reset! task (sched/interval s millis task-f))
+    new-r))
+
+
+(defn seqstream
+  "Returns an eventstream that provides all values in collection xs
+  and then completes."
+  [xs & {:keys [label] :or {label (str (gensym "seq"))}}]
+  (assoc (Seqstream. (atom {:seq (seq xs)
+                            :last-occ nil})
+                     true)
+    :label label))
+
+
+(defn timer
+  "Returns a behavior that changes every millis milliseconds it's
+  value, starting with 0, incrementing it by 1.
+  The periodic task is cancelled when the eventstream is completed."
+  [millis]
+  (let [netref  *netref*
+        s       (scheduler netref)
+        ticks   (atom 0)
+        new-r   (behavior 0 :label (unique-name "timer"))
+        task    (atom nil)
+        task-f  (fn []
+                  (if (completed? new-r)
+                    (sched/cancel @task)
+                    (rn/push! netref new-r (c/swap! ticks inc))))]
+    (reset! task (sched/interval s millis millis task-f))
+    new-r))
+
+
+
+;; ---------------------------------------------------------------------------
+;; Common combinators
+
+
+(declare match)
+
+
+(defn amb
+  "Returns an eventstream that follows the first reactive from rs that
+  emits a value."
+  [& rs]
+  {:pre [(every? reactive? rs)]
+   :post [(reactive? %)]}
+  (let [new-r   (eventstream :label (unique-name "amb"))
+        f       (fn [{:keys [input-reactives input-rvts] :as input}]
+                  (let [r (first input-reactives)]
+                    {:remove-by #(= (link-outputs %) [new-r])
+                     :add [(make-link "amb-selected" [r] [new-r] :complete-on-remove [new-r])]
+                     :output-rvts (single-value (fvalue input-rvts) new-r)}))
+        links   (->> rs (c/map #(make-link "amb-tentative" [%] [new-r] :link-fn f)))]
+    (apply (partial add-links! *netref*) links)
+    new-r))
+
+
+(defn any
+  "Returns an eventstream that provides true as soon as there occurs one
+  truthy value in eventstream r."
+  ([r]
+     (any identity r))
+  ([pred r]
+     (match pred true false r)))
+
+
+(defn buffer
+  "Returns an eventstream that provides vectors of values. A non-empty
+  vector occurs either after millis millisseconds, or if n items are
+  available."
+  [n millis r]  
+  {:pre [(number? n) (number? millis) (reactive? r)]
+   :post [(reactive? %)]}
+  (let [netref *netref*
+        s      (scheduler netref)
+        b      (atom {:queue [] :dequeued nil})
+        task   (atom nil)
+        enq    (fn [{:keys [queue] :as q} x]
+                 (if (and (> n 0) (>= (c/count queue) n))
+                   (assoc q :queue [x] :dequeued queue)
+                   (assoc q :queue (conj queue x) :dequeued nil)))
+        deq    (fn [{:keys [queue] :as q}]
+                 (assoc q :queue [] :dequeued queue))]
+    (derive-new eventstream "buffer" [r]
+                :link-fn
+                (fn [{:keys [input-rvts output-reactives] :as input}]
+                  (let [output         (first output-reactives)
+                        {vs :dequeued
+                         queue :queue} (c/swap! b enq (fvalue input-rvts))]
+                    (when (and (= 1 (c/count queue)) (> millis 0))
+                      (c/swap! task (fn [_]
+                                    (sched/once s millis
+                                                (fn []
+                                                  (let [vs (:dequeued (c/swap! b deq))]
+                                                    (when (seq vs)
+                                                      (rn/push! netref output vs))))))))
+                    (if (seq vs)
+                      (do (some-> task deref sched/cancel)
+                          (make-result-map input vs)))))
+                :complete-fn
+                (fn [link r]
+                  (let [vs (:queue @b)]
+                    (some-> task deref sched/cancel)
+                    (if (seq vs)
+                      {:output-rvts (single-value vs (-> link link-outputs first))}))))))
+
+(defn buffer-t
+  "Returns an eventstream thar provides vectors of values.
+  A non-empty vector occurs at most each millis milliseconds."
+  [millis r]
+  (buffer -1 millis r))
+
+
+(defn buffer-c
+  "Returns an eventstream thar provides vectors of values.
+  A non-empty vector occurs when n items are available."
+  [n r]
+  (buffer n -1 r))
 
 
 (defn changes
-  "Creates an event source from a signal so that an event is raised
-  whenever the signal value changes. The event is a pair [old-value new-value].
-  If the fn-or-val argument
-  evaluates to a function, then it is applied to the signals
-  new value. An event is raised when the function returns a non-nil
-  result. If fn-or-val is not a function it is assumed to be the
-  event that will be raised on signal value change."
-  ([sig]
-     (changes identity sig))
-  ([f sig]
-  (let [newes (eventsource :changes)]
-    (subscribe sig newes (fn [[old new]] (raise-event! newes [(f old) (f new)])))
-    newes)))
+  "Returns an eventstream that emits pairs of values [old new]
+  whenever the value of the underlying behavior changes."
+  [behavior]
+  {:pre [(behavior? behavior)]
+   :post [(eventstream? %)]}
+  (let [last-value (atom @behavior)]
+    (derive-new eventstream "changes" [behavior]
+                :link-fn (fn [{:keys [input-rvts output-reactives]}]
+                           (let [old @last-value
+                                 new (fvalue input-rvts)]
+                             (reset! last-value new)
+                             (if (not= old new)
+                               {:output-rvts (single-value [old new] (first output-reactives))}
+                               {}))))))
+
+(declare flatmap)
+
+(defn concat
+  "Returns an eventstream that emits the items of all reactives in
+  rs. It first emits items from the first reactive until it is
+  completed, then from the second and so on."
+  [& rs]
+  {:pre [(every? reactive? rs)]
+   :post [(reactive? %)]}
+  (flatmap identity (seqstream rs)))
 
 
-(defn setv!
-  "Sets the value of this signal and returns the value."
-  [sig value]
-  (enqueue! sig value)
-  value)
+(defn count
+  "Returns an eventstream that emits the number of items that were
+  emitted by r."
+  [r]
+  {:pre [(reactive? r)]
+   :post [(reactive? %)]}
+  (let [c (atom 0)]
+    (derive-new eventstream "count" [r]
+                :link-fn
+                (fn [{:keys [input-rvts] :as input}]
+                  (make-result-map input (c/swap! c inc))))))
 
 
-(defn setvs!
-  "Sets each output-signal to the respective value."
-  [output-signals values]
-  (doseq [sv (c/map vector output-signals values)]
-    (setv! (first sv) (second sv))))
+(defn debounce
+  "Returns an eventstream that emits an item of r not before millis
+  milliseconds have passed. If a new item is emitted by r before the
+  delay is passed the delay starts from the beginning."
+  [millis r]
+  {:pre [(number? millis) (reactive? r)]
+   :post [(reactive? %)]}
+  (let [task (atom nil)]
+    (derive-new eventstream "debounce" [r]
+                :link-fn
+                (fn [{:keys [input-rvts output-reactives] :as input}]
+                  (let [output (first output-reactives)
+                        v      (fvalue input-rvts)
+                        old-t  @task
+                        netref *netref*
+                        s      (scheduler netref)
+                        new-t  (sched/once s millis #(rn/enq netref {:rvt-map {output [v (now)]}
+                                                                     :results [{:allow-complete #{output}}]}))]
+                    (when (and old-t (sched/pending? old-t))
+                      (sched/cancel old-t))
+                    (reset! task new-t)
+                  {:dont-complete #{output}})))))
 
 
-(defn as-val
-  "Returns x if x is not a signal, otherwise returns (getv x)"
-  [x]
-  (if (satisfies? Signal) (getv x) x))
-
-;; -----------------------------------------------------------------------------
-;; binding of signals, lifting of functions and expressions
-
-
-(defn- as-vector
-  "Returns a value vector from a collection of values or a single value."
-  [values]
-  (if (vector? values)
-    values
-    (if (list? values)
-      (vec values)
-      (vector values))))
-
-
-(defn bind!
-  "Connects n input-signals with one output-signal so that on
-  each change of an input signal value the value of the output signal
-  is re-calculated by the function f. Function f must accept n
-  arguments and must a single value."
-  [output-sig f input-sigs]
-  (let [calc-outputs (fn []
-                       (let [input-values (c/map getv input-sigs)
-                             output-value (c/apply f input-values)]
-                         #_(println input-values "->" output-value)
-                         output-value))
-        listener-fn (fn [_]
-                      (let [v (calc-outputs)]
-                        (when output-sig
-                              (setv! output-sig v))))]
-    (doseq [sig input-sigs]
-      (subscribe sig output-sig listener-fn))
-    ; initial value sync
-    (try (let [v (calc-outputs)]
-           (when output-sig
-             (publish! output-sig v)))
-         (catch Exception ex (publish! exceptions (as-occ ex))))
-  output-sig))
+(defn delay
+  "Returns an eventstream that emits an item of r after millis
+  milliseconds."
+  [millis r]
+  {:pre [(pos? millis) (reactive? r)]
+   :post [(reactive? %)]}
+  (let [netref *netref*
+        s      (scheduler netref)]
+    (derive-new eventstream "delay" [r]
+                :link-fn
+                (fn [{:keys [input-rvts output-reactives] :as input}]
+                  (let [output (first output-reactives)
+                        v      (fvalue input-rvts)]
+                    (sched/once s millis #(rn/enq netref {:rvt-map {output [v (now)]}
+                                                          :results [{:allow-complete #{output}}]}))
+                    {:dont-complete #{output}})))))
 
 
-(defn apply*
-  "Creates a signal that is updated by applying the n-ary function
-  f to the values of the input signals whenever one value changes."
-  [f sigs]
-  (let [newsig (signal :apply 0)]
-    (bind! newsig f (c/map as-signal sigs))
-    newsig))
+(defn distinct
+  "Returns an eventstream that emits only distinct items of r."
+  [r]
+  (let [vs (atom #{})]
+    (derive-new eventstream "distinct" [r]
+                :link-fn
+                (fn [{:keys [input-rvts output-reactives] :as input}]
+                  (let [v (fvalue input-rvts)]
+                    (when-not (@vs v)
+                      (c/swap! vs conj v)
+                      {:output-rvts (single-value v (first output-reactives))}))))))
 
 
-(defn apply
-  "Creates a signal that is updated by applying the n-ary function
-  f to the values of the input signals whenever one value changes."
-  [f & sigs]
-  (apply* f sigs))
+(defn drop-while
+  "Returns an eventstream that skips items of r until the predicate
+  pred is false for an item of r."
+  [pred r]
+  (derive-new eventstream "drop" [r]
+              :link-fn
+              (fn [{:keys [input-rvts] :as input}]
+                (if-not (apply pred (values input-rvts))
+                  (make-result-map input (fvalue input-rvts))))))
 
 
-(defn if*
-  "Creates a signal that contains the value of t-sig if cond-sig contains
-  true, otherwise the value of f-sig."
-  [cond-sig t-sig f-sig]
-  (let [newsig (signal :if nil)
-        switch-fn (fn [[old new]] (setv! newsig (if new (getv t-sig) (getv f-sig))))
-        propagate-fn (fn [_] (setv! newsig (if (getv cond-sig) (getv t-sig) (getv f-sig))))]
-    (subscribe cond-sig newsig switch-fn)
-    (subscribe t-sig newsig propagate-fn)
-    (subscribe f-sig newsig propagate-fn)
-    ; initial value sync
-    (publish! newsig (if (getv cond-sig) (getv t-sig) (getv f-sig)))
-    newsig))
+(defn drop
+  "Returns an eventstream that first drops n items of r, all
+  subsequent items are emitted."
+  [n r]
+  {:pre [(pos? n) (reactive? r)]
+   :post [(reactive? %)]}
+  (drop-while (countdown n) r))
 
 
-(defn and*
-  "Creates a signal that contains the result of a logical And of all signals values."
-  [& sigs]
-  (apply* (fn [& xs]
-            (if (every? identity xs)
-              (last xs)
-              false)) sigs))
+(defn drop-last
+  "Returns an eventstream that drops the last n items of r."
+  [n r]
+  {:pre [(pos? n) (reactive? r)]
+   :post [(reactive? %)]}
+  (let [q (atom (make-queue n))]
+    (derive-new eventstream "drop-last" [r]
+                :link-fn
+                (fn [{:keys [input-rvts output-reactives]}]
+                  (let [vs (:dequeued (c/swap! q enqueue (fvalue input-rvts)))]
+                    (if (seq vs)
+                      {:output-rvts (single-value (first vs) (first output-reactives))}))))))
+
+(defn every
+  "Returns an eventstream that emits false as soon as the first falsey
+  item is emitted by r."
+  ([r]
+     (every identity r))
+  ([pred r]
+     (match (complement pred) false true r)))
 
 
-(defn or*
-  "Creates a signal that contains the result of a logical Or of all signals values."
-  [& sigs]
-  (apply* (fn [& xs]
-                    (if-let [r (some identity xs)]
-                      r
-                      false)) sigs))
+(defn filter
+  "Returns an eventstream that emits only items of r if pred returns
+  true."
+  [pred r]
+  {:pre [(fn-spec? pred) (reactive? r)]
+   :post [(reactive? %)]}
+  (let [[executor f] (unpack-fn-spec pred)]
+    (derive-new eventstream "filter" [r]
+                :executor executor
+                :link-fn
+                (make-link-fn f (fn [{:keys [input-rvts] :as input} v ex]
+                                  (if v
+                                    (make-result-map input
+                                                     (fvalue input-rvts)
+                                                     ex)))))))
 
-(declare lift-expr)
+(defn flatmap
+  "Returns an eventstream that passes items of rs to a function
+  f [x ... -> Reactive], whenever all rs have a pending item. 
+  Consecutively emits all items of the resulting reactives."
+  [f & rs]
+  {:pre [(fn-spec? f) (every? reactive? rs)]
+   :post [(reactive? %)]}
+  (let [[executor f] (unpack-fn-spec f)
+        new-r    (eventstream :label (unique-name "flatmap"))
+        state    (atom (make-reactive-queue new-r)) ]
+    (add-links! *netref* (make-link "flatmap" rs [new-r]
+                                    :complete-on-remove [new-r]
+                                    :executor executor
+                                    :link-fn
+                                    (fn [{:keys [input-rvts] :as input}]
+                                      (let [r (apply f (values input-rvts))]
+                                        (c/swap! state enqueue-reactive state r)))))
+    new-r))
+
+
+(defn hold
+  "Returns a behavior that always contains the last item emitted by r."
+  [r]
+  {:pre [(reactive? r)]
+   :post [(behavior? %)]}
+  (derive-new behavior "hold" [r]))
+
+
+(defn into
+  "Takes items from the last given reactive and broadcasts it to all
+  preceding reactives. Returns the first reactive."
+  [ & rs]
+  {:pre [(< 1 (c/count rs)) (every? reactive? rs)]
+   :post [(reactive? %)]}
+  (add-links! *netref* (make-link "into" [(last rs)] (c/drop-last rs)))
+  (first rs))
+
+
+(defn map
+  "Returns an eventstream that emits the results of application of f
+  whenever all reactives in rs have items available."
+  [f & rs]
+  {:pre [(fn-spec? f) (every? reactive? rs)]
+   :post [(reactive? %)]}
+  (let [[executor f] (unpack-fn-spec f)]
+    (derive-new eventstream "map" rs
+                :executor executor
+                :link-fn
+                (make-link-fn f))))
+
+
+(defn mapcat
+  "Returns an eventstream that emits items of collections that f
+  applied to values of reactives in rs returns."
+  [f & rs]
+  {:pre [(fn-spec? f) (every? reactive? rs)]
+   :post [(reactive? %)]}
+  (let [[executor f] (unpack-fn-spec f)]
+    (derive-new eventstream "mapcat" rs
+                :executor executor
+                :link-fn
+                (make-link-fn f (fn [input vs ex]
+                                  (assoc input
+                                    :output-rvts (if-not ex
+                                                   (enqueue-values vs (-> input :output-reactives first)))
+                                    :exception ex))))))
+
+
+(defn match
+  "Returns an eventstream that emits match-value and completes as soon
+  as pred applied to item of r is true. Otherwise emits default-value
+  on completion if no item in r matched pred."
+  ([pred match-value default-value r]
+  {:pre [(fn-spec? pred) (reactive? r)]
+   :post [(reactive? %)]}
+  (let [[executor pred] (unpack-fn-spec pred)]
+    (derive-new eventstream "match" [r]
+                :executor executor
+                :link-fn
+                (make-link-fn pred
+                              (fn [{:keys [output-reactives]} v ex]
+                                (if v
+                                  {:output-rvts (single-value match-value (first output-reactives))
+                                   :remove-by #(= output-reactives (link-outputs %))})))
+                :complete-fn
+                (fn [l r]
+                  {:output-rvts (single-value default-value (-> l link-outputs first))})))))
+
+
+(defn merge
+  "Returns an eventstream that emits items from all reactives in rs in
+  the order they arrive."
+  [& rs]
+  {:pre [(every? reactive? rs)]
+   :post [(reactive? %)]}
+  (let [new-r   (eventstream :label (unique-name "merge"))
+        inputs  (atom (set rs))
+        links   (->> rs (c/map #(make-link "merge" [%] [new-r]
+                                           :complete-fn
+                                           (fn [l r]
+                                             (if-not (seq (c/swap! inputs disj r))
+                                               {:output-rvts (single-value ::rn/completed new-r)})))))]
+    (if (seq links)
+      (apply (partial add-links! *netref*) links)
+      (complete! new-r))
+    new-r))
+
+
+(defn reduce
+  "Returns an eventstream that applies the reducing function f to the
+  accumulated value (initially seeded with initial-value) and items
+  emitted by r. Emits a result only upon completion of r."
+  [f initial-value r]
+  {:pre [(fn-spec? f) (reactive? r)]
+   :post [(reactive? %)]}
+  (let [[executor f] (unpack-fn-spec f)
+        accu         (atom initial-value)]
+    (derive-new eventstream "reduce" [r]
+                :executor executor
+                :link-fn
+                (make-link-fn (partial c/swap! accu f)
+                              (constantly nil))
+                :complete-fn
+                (fn [l r]
+                  {:output-rvts (single-value @accu
+                                              (-> l link-outputs first))}))))
+
+
+(defn remove
+  "Returns an eventstream that drops items from r if they match the
+  predicate pred."
+  [pred r]
+  (filter (if (map? pred)
+            (update-in pred [:f] complement)
+            (complement pred))
+          r))
+
+
+(defn scan
+  "Returns an eventstream that applies the reducing function f to the
+  accumulated value (initially seeded with initial-value) and items
+  emitted by r. Emits each result of f."
+  [f initial-value r]
+  {:pre [(reactive? r)]
+   :post [(reactive? %)]}
+  (let [[executor f] (unpack-fn-spec f)
+        accu         (atom initial-value)]
+    (derive-new eventstream "scan" [r]
+                :link-fn
+                (make-link-fn #(c/swap! accu f %)))))
+
+
+(defn sliding-buffer
+  "Returns an eventstream that emits vectors of items from r, with a
+  maximum of n items. When n is reached drops the oldest item and
+  conjoins the youngest item from r."
+  [n r]
+  {:pre [(reactive? r)]
+   :post [(reactive? %)]}
+  (let [q (atom [])]
+    (derive-new eventstream "sliding-buffer" [r]
+                :link-fn
+                (fn [{:keys [input-rvts output-reactives]}]
+                  (let [vs (c/swap! q
+                            (fn [items]
+                              (conj (if (>= (c/count items) n)
+                                      (vec (c/drop 1 items))
+                                      items)
+                                    (fvalue input-rvts))))]
+                    {:output-rvts (broadcast-value vs output-reactives)})))))
+
+
+(defn startwith
+  "Returns an eventstream that first emits items from start-r until
+  completion, then emits items from r."
+  [start-r r]
+  (concat start-r r))
+
+
+(defn switch
+  "Returns an eventstream that emits items from the latest reactive
+  emitted by r."
+  [r]
+  {:pre [(reactive? r)]
+   :post [(reactive? %)]}
+  (let [new-r (eventstream :label (unique-name "switch"))]
+    (add-links! *netref*
+                (make-link "switcher" [r] [] ;; must not point to an output reactive
+                           :link-fn
+                           (fn [{:keys [input-rvts] :as input}]
+                             (let [r (fvalue input-rvts)]
+                               {:remove-by #(= (link-outputs %) [new-r])
+                                :add (if (reactive? r)
+                                       [(make-link "switch" [r] [new-r])])}))))
+    new-r))
+
+
+(defn snapshot
+  "Returns an eventstream that emits the evaluation of x everytime it
+  receives an item from r.
+
+  x can be: 
+  - an fn-spec with an arbitrary executor and a function f,
+  - a function that is executed synchronously, 
+  - an IDeref implementation, or 
+  - a value."
+  [{:keys [executor f] :as x} r]
+  {:pre [(reactive? r)]
+   :post [(reactive? %)]}
+  (let [netref *netref*
+        f      (if executor
+                 #(execute executor netref f)
+                 (sample-fn x))]
+    (derive-new eventstream "snapshot" [r]
+                :link-fn
+                (fn [{:keys [output-reactives]}]
+                  {:output-rvts (single-value (f) (first output-reactives))}))))
+
+
+(defn subscribe
+  "Attaches a 1-arg function f to r that is invoked whenever r emits
+  an item.  Instead of a function, f can be an fn-spec containing an
+  arbitrary executor and a function that is executed by the executor
+  on a different thread.
+  Returns r."
+  ([f r]
+     (subscribe (gensym "subscriber") f r))
+  ([key f r]
+     {:pre [(fn-spec? f) (reactive? r)]
+      :post [(reactive? %)]}
+     (let [[executor f] (unpack-fn-spec f)]
+       (add-links! *netref* (assoc (make-link "subscriber" [r] []
+                                              :link-fn (make-link-fn f (constantly {}))
+                                              :executor executor)
+                              :subscriber-key key))
+       r)))
+
+
+(defn swap!
+  "Swaps the value of atom a with the value of the result of (f
+  value-of-a item) whenever r emits an item.
+  Returns r."
+  [a f r]
+  (subscribe (partial c/swap! a f) r))
+
+
+(defn take-while
+  "Returns an eventstream that emits items from r as long as they
+  match predicate pred."
+  [pred r]
+  {:pre [(fn-spec? pred) (reactive? r)]
+   :post [(reactive? %)]}
+  (derive-new eventstream "take-while" [r]
+              :link-fn
+              (fn [{:keys [input-rvts output-reactives] :as input}]
+                (if (apply pred (values input-rvts))
+                  {:output-rvts (single-value (fvalue input-rvts) (first output-reactives))}
+                  {:no-consume true
+                   :remove-by #(= (link-outputs %) output-reactives)}))))
+
+
+(defn take
+  "Returns an eventstream that emits at most n items from r."
+  [n r]
+  {:pre [(pos? n) (reactive? r)]
+   :post [(reactive? %)]}
+  (let [counter  (atom n)
+        new-r    (derive-new eventstream "take" [r]
+                             :link-fn
+                             (fn [{:keys [input-rvts output-reactives] :as input}]
+                               (if (> (c/swap! counter dec) 0)
+                                 {:output-rvts (single-value (fvalue input-rvts)
+                                                             (first output-reactives))}
+                                 {:output-rvts (enqueue-values [(fvalue input-rvts)
+                                                                ::rn/completed]
+                                                             (first output-reactives))
+                                  :remove-by #(= (link-outputs %) output-reactives)})))]
+    (when (= 0 n)
+      (complete! new-r))
+    new-r))
+
+
+(defn take-last
+  "Returns an eventstream that emits the last n items from r."
+  [n r]
+  {:pre [(pos? n) (reactive? r)]
+   :post [(reactive? %)]}
+  (let [q (atom (make-queue n))]
+    (derive-new eventstream "take-last" [r]
+                :link-fn
+                (fn [{:keys [input-rvts]}]
+                  (c/swap! q enqueue (fvalue input-rvts)))
+                :complete-fn
+                (fn [l r]
+                  {:output-rvts (enqueue-values (-> q deref :queue)
+                                                (-> l link-outputs first))}))))
+
+
+(defn throttle
+  "Returns an eventstream that queues items from r. Emits items with
+  on a fixed time period by applying f to the collection of queued
+  items.  If more than max-queue-size items arrive in a period these
+  are not consumed.
+  The periodic task is cancelled when the eventstream is completed."
+  [f millis max-queue-size r]
+  {:pre [(fn-spec? f) (pos? millis) (pos? max-queue-size) (reactive? r)]
+   :post [(reactive? %)]}
+  (let [netref *netref*
+        s      (scheduler netref)
+        q      (atom (make-queue max-queue-size))
+        new-r  (derive-new eventstream "throttle" [r]
+                           :link-fn
+                           (fn [{:keys [input-rvts] :as input}]
+                             (if (>= (-> q deref :queue c/count) max-queue-size)
+                               {:no-consume true}
+                               (c/swap! q enqueue (fvalue input-rvts)))))
+        task   (atom nil)
+        task-f (fn []
+                 (if (completed? new-r)
+                   (sched/cancel @task)
+                   (let [vs (:dequeued (c/swap! q dequeue-all))]
+                     (when-not (empty? vs)
+                       (rn/push! netref new-r (f vs))))))]
+    (reset! task (sched/interval s millis millis task-f))
+    new-r))
+
+
+(defn unsubscribe
+  "Detaches the listener function that the key denotes from reactive r.
+  Returns r."
+  [key r]
+  (remove-links! *netref* #(and (= (:subscriber-key %) key)
+                                (= (link-inputs %) [r])))
+  r)
+
+
+;; ---------------------------------------------------------------------------
+;; Expression lifting
+
+
+(defn ^:no-doc as-behavior
+  [label x]
+  (if (behavior? x)
+     x
+    (behavior x :label label)))
+
+
+(defn ^:no-doc and-f
+  [& xs]
+  (if (next xs)
+    (and (first xs) (apply and-f (rest xs)))
+    (first xs)))
+
+
+(defn ^:no-doc or-f
+  [& xs]
+  (if (next xs)
+    (or (first xs) (apply or-f (rest xs)))
+    (first xs)))
+
+
+(defn ^:no-doc lift-fn
+  [f & rs]
+  (derive-new behavior "lift-fn" rs
+              :link-fn
+              (make-link-fn f)))
+
+
+(defn ^:no-doc lift-if
+  [test-b then-b else-b]
+  (derive-new behavior "lift-if" [test-b then-b else-b]
+              :link-fn
+              (make-link-fn (fn [test then else]
+                              (if test then else)))))
+
+
+(defn ^:no-doc lift-cond
+  [& test-expr-bs]
+  (derive-new behavior "lift-cond" test-expr-bs
+              :link-fn
+              (make-link-fn (fn [& args]
+                              (let [[test-value
+                                     expr-value] (->> args
+                                                      (partition 2)
+                                                      (c/drop-while (comp not first))
+                                                      first)]
+                                expr-value)))))
 
 (defn- lift-exprs
   [exprs]
-  (c/map lift-expr exprs))
+  (c/map (fn [expr] `(lift ~expr)) exprs))
 
 
-(defn- lift-threaded-exprs
-  [exprs]
-  (cons (lift-expr (first exprs))
-        (c/map (fn [expr]
-                 (if (list? expr)
-                   (lift-expr expr)
-                   `(apply ~expr)))
-               (rest exprs))))
-
-
-(defmacro thread-2nd*
-  ([e] e)
-  ([e1 e2] (if (seq? e2)
-             `(~(first e2) ~(second e2) ~e1 ~@(next (next e2)))
-             (list e2 e1)))
-  ([e1 e2 & es] `(thread-2nd* (thread-2nd* ~e1 ~e2) ~@es)))
-
-
-(defn- outermost-fn-var
-  [expr]
-  (resolve
-   (case (first expr)
-     (-> ->>) (let [last-expr (last expr)]
-                (if (seq? last-expr)
-                  (first last-expr)
-                  last-expr))
-     (first expr))))
-
-
-(defn- yields-eventsource?
-  [expr]
-  (->> expr
-       outermost-fn-var
-       (contains? #{#'reactor.core/map #'reactor.core/filter #'reactor.core/remove #'reactor.core/delay #'reactor.core/calm #'reactor.core/merge #'reactor.core/snapshot #'reactor.core/changes})))
-
-
-(defn- yields-signal?
-  [expr]
-  (->> expr
-       outermost-fn-var
-       (contains? #{#'reactor.core/hold #'reactor.core/signal #'reactor.core/switch #'reactor.core/reduce #'reactor.core/reduce-t #'reactor.core/behind #'reactor.core/lift #'reactor.core/apply})))
-
-
-(defn- lift-invocation-expr
-  [expr]
-  (cond
-   (yields-signal? expr) expr
-   (yields-eventsource? expr) `(hold ~expr)
-   :else (case (first expr)
-           ->> `(->> ~@(lift-threaded-exprs (rest expr)))
-           -> `(thread-2nd* ~@(lift-threaded-exprs (rest expr)))
-           `(reactor.core/apply ~(first expr) ~@(lift-exprs (rest expr))))))
-
-;; TODO how to handle a (fn ) expression?
-;;   It is applied by a HOF like map, reduce or friends
-;;   Parameters are always values, not signals
-;;   Closed over symbols may point to signals or not
-;;   If a symbol is a signal its value has to be taken
-;;   
-
-
-#_(defn- value
-  [s]
-  (if (satisfies? Signal s) (getv s) s))
-
-#_(defn- wrap-in-value
-  [locals expr]
-  (cons (first expr) (c/map #(cond
-                              (list? %) (wrap-in-value locals %)
-                              (or (number? %) (string? %)) %
-                              :else (list 'value %))
-                            (rest expr))))
-
-#_(defn- lift-fn-expr
-  [expr]
-  (let [[fn params & body] expr
-        locals (set params)
-        ]
-    ))
-
-;; end TODO
-
-(defn- lift-expr
+(defn- lift-dispatch
   [expr]
   (if (list? expr)
-    (case (first expr)
-      let (let [[_ bindings & exprs] expr
-                lifted-bindings (->> bindings
-                                     (partition 2)
-                                     (mapcat (fn [[s expr]] [s (lift-expr expr)]))
-                                     vec)]
-            `(let ~lifted-bindings ~@(lift-exprs exprs)))
-      if (let [[_ c t f] expr]
-           `(if* ~(lift-expr c)
-                 ~(lift-expr t)
-                 ~(if f (lift-expr f) (lift-expr nil))))
-      or `(or* ~@(lift-exprs (rest expr)))
-      and `(and* ~@(lift-exprs (rest expr)))
-      (lift-invocation-expr expr)) ; regular function application
-    (case expr
-      <S> (symbol "<S>")
-      `(as-signal ~expr))))  ;; no list, make sure it's a signal
+    (if (#{'if 'cond 'let 'and 'or} (first expr))
+      (first expr)
+      'fn-apply)
+    'symbol))
+
+
+(defmulti ^:private lift*
+  #'lift-dispatch)
 
 
 (defmacro lift
-  "Macro that takes an expr, lifts it (and all subexpressions) and
-  returns a signal that changes whenever a value of the signals of the
-  sexpr changes.
-  Supports in addition to application of regular functions the following
-  subset of Clojure forms:
-     if, or, and, let, -> and ->>
-  To use the new signal in the expr use the symbol <S>."
-  ([expr]
-     `(lift 0 ~expr))
-  ([initial-value expr]
-     (let [s (symbol "<S>")]
-       `(let [~s (reactor.core/signal ~initial-value)]
-          (bind! ~s identity [~(lift-expr expr)])
-          ~s)))) 
-
-
-(defn process-with
-  "Connects a n-ary function to n input signals so that the function is
-  executed whenever one of the signals changes its value. The output of the
-  function execution is discarded. Instead returns the input signals."
-  [f & input-sigs]
-  (bind! nil f (vec input-sigs))
-  (if (= 1 (count input-sigs)) (first input-sigs) (vec input-sigs)))
-
-
-
-;; -----------------------------------------------------------------------------
-;; default implementations and factories
-
-(def ^:private reactive-fns
-  {:subscribe (fn [r react f]
-                (p/add! (.ps r) (p/propagator f react))
-                r)
-   :unsubscribe (fn [r react-or-fn]
-                  (doseq [p (->> (.ps r)
-                                 p/propagators
-                                 (c/filter #(or (nil? react-or-fn) ; remove all
-                                                (= (:target %) react-or-fn)
-                                                (= (:fn %) react-or-fn))))]
-                    (p/remove! (.ps r) p))
-                  r)
-   :followers (fn [r]
-                (->> r (.ps) p/propagators (c/map :target) (c/remove nil?)))
-   :role (fn [r] (.role r))})
-
-
-
-(defrecord DefaultSignal [role value-atom updated-atom executor ps]
-  Signal
-  (getv [sig]
-    (or (-> engine deref :pending-values (get sig)) @value-atom))
-  (last-updated [sig]
-    @updated-atom))
-
-(extend DefaultSignal
-  Reactive
-  (-> reactive-fns
-      (assoc :publish! (fn [sig value]
-                         (let [{updated-atom :updated-atom
-                                value-atom :value-atom
-                                ps :ps
-                                executor :executor} sig
-                               new value
-                               old @value-atom]
-                           (reset! updated-atom (now))
-                           (reset! value-atom value)
-                           (if (not= old new)
-                             (x/schedule executor #(p/propagate-all! ps [old new]))))))))
-
-
-(defrecord LaggedSignal [role lag value-ref q-ref executor ps]
-  Signal
-  (getv [sig]
-    (or (-> engine deref :pending-values (get sig)) (first @value-ref)))
-  (last-updated [sig]
-    (second @value-ref)))
-
-(extend LaggedSignal
-  Reactive
-  (-> reactive-fns
-      (assoc :publish! (fn [sig value]
-                         (dosync
-                          (let [{lag :lag
-                                 value-ref :value-ref
-                                 q-ref :q-ref
-                                 ps :ps
-                                 executor :executor} sig
-                                 vs (conj @q-ref [value (now)])]
-                            (if (> (count vs) lag)
-                              (let [[new & rest] vs
-                                    old @value-ref]
-                                (ref-set value-ref new)
-                                (ref-set q-ref (vec rest))
-                                (if (not= old new)
-                                  (x/schedule executor #(p/propagate-all! ps [(first old) (first new)]))))
-                              (ref-set q-ref vs))
-                            value))))))
-
-
-(defrecord Time [role time-atom ps]
-  Signal
-  (getv [_]
-    @time-atom)
-  (last-updated [_]
-    @time-atom))
-
-(extend Time
-  Reactive
-  (-> reactive-fns
-      (assoc :publish! (fn [sig value]
-                         (let [{time-atom :time-atom
-                                ps :ps} sig
-                                new value
-                                old @time-atom]
-                           (reset! time-atom value)
-                           (if (not= old new)
-                             (p/propagate-all! ps [old new])))))))
-
-
-(defrecord ElapsedTime [role sig ps]
-  Signal
-  (getv [_]
-    (- (now) (last-updated sig)))
-  (last-updated [_]
-    (now)))
-
-(extend ElapsedTime
-  Reactive
-  (-> reactive-fns
-      (assoc :publish! (fn [{ps :ps} value]
-                         (p/propagate-all! ps value)))))
-
-
-(defn- as-occ
-  [evt-or-occ]
-  (if (instance? Occurence evt-or-occ)
-    evt-or-occ
-    (Occurence. evt-or-occ (now))))
-
-
-(defrecord DefaultEventSource [role executor ps]
-  EventSource
-  (raise-event! [evtsource evt]
-    (enqueue! evtsource (as-occ evt))
-    evt))
-
-(extend DefaultEventSource
-  Reactive
-  (-> reactive-fns
-      (assoc :publish! (fn [evtsource value]
-                         (let [{executor :executor
-                                ps :ps} evtsource]
-                           (x/schedule executor #(p/propagate-all! ps (as-occ value))))))))
-
-
-;; -----------------------------------------------------------------------------
-;; factories for signals and event sources
-
-(defn signal
-  "Creates new signal with the given initial value."
-  ([initial-value]
-     (signal :signal x/current-thread initial-value))
-  ([role initial-value]
-     (signal role x/current-thread initial-value))
-  ([role executor initial-value]
-     (let [a (atom initial-value)
-           updated (atom (if initial-value (now) nil))
-           ps (p/propagator-set)
-           newsig (DefaultSignal. role a updated executor ps)]
-       (register! newsig)
-       newsig)))
-
-
-(defn lagged-signal
-  "Creates a new lagged signal that reflect values with a lag.
-  A lag of 0 means the value that was setv! is directly available via getv."
-  ([lag initial-value]
-     (lagged-signal :signal x/current-thread lag initial-value))
-  ([role lag initial-value]
-     (lagged-signal role x/current-thread lag initial-value))
-  ([role executor lag initial-value]
-     (let [r (ref (if initial-value [initial-value (now)] nil))
-           q-ref (ref (if initial-value
-                        (->> initial-value
-                             (repeat lag)
-                             (c/map #(vector % (now)))
-                             vec)
-                        []))
-           ps (p/propagator-set)
-           newsig (LaggedSignal. role lag r q-ref executor ps)]
-       (register! newsig)
-       newsig)))
-
-
-(defn elapsed-time
-  "Returns a new signal that keeps the elapsed time of the last update of
-  the given signal, and propagates the elapsed time on every change of the
-  given time signal."
-  ([sig]
-     (elapsed-time :signal sig))
-  ([role sig]
-     (let [ps (p/propagator-set)
-           newsig (ElapsedTime. role sig ps)]
-       (subscribe time
-                  newsig
-                  (fn [[t-1 t]]
-                    #_(println (last-updated sig) (- t (last-updated sig)))
-                    (publish! newsig [(- t-1 (last-updated sig))
-                                      (-  t (last-updated sig))])))
-       (register! newsig)
-       newsig)))
-
-
-(defn eventsource
-  "Creates a new event source."
-  ([]
-     (eventsource :eventsource x/current-thread))
-  ([role]
-     (eventsource role x/current-thread))
-  ([role executor]
-     (let [newes (DefaultEventSource. role executor (p/propagator-set))]
-       (register! newes)
-       newes)))
-
-
-;; -----------------------------------------------------------------------------
-;; bookkeeping / disposal for reactives and default reactives
-
-(defn ^:dynamic *default-exception-handler*
-  [ex]
-  (.printStackTrace ex))
-
-(defn- exception-handler
-  [ex-occ]
-  ((var-get #'*default-exception-handler*) (:event ex-occ)))
-
-(defonce time (Time. :time (atom (now)) (p/propagator-set)))
-(defonce etime (DefaultSignal. :elapsed-time (atom 0) (atom (now)) x/current-thread (p/propagator-set)))
-(defonce exceptions (let [ex (DefaultEventSource. :exceptions x/current-thread (p/propagator-set))]
-                      (->> ex (react-with exception-handler))
-                      ex))
-
-
-(defonce default-reactives {:active #{time etime exceptions}
-                            :disposed #{}})
-
-(defonce reactives (atom default-reactives))
-
-(defn- register!
-  "Registers a reactive as active."
-  [react]
-  (swap! reactives #(update-in % [:active] conj react)))
-
-
-(defn dispose!
-  "Marks the given reactive as disposed. The next call to unlink! will
-  remove the reactive from all other reactives that it follows."
-  [react]
-  (when-not ((:active default-reactives) react)
-    (swap! reactives #(let [{as :active
-                             ds :disposed} %]
-                        {:active (disj as react)
-                         :disposed (conj ds react)}))))
-
-(defn disposed?
-  "Determines if a reactive is active."
-  [react]
-  (nil? ((:active @reactives) react)))
-
-
-(defn unlink!
-  "Unsubscribes all followers marked as disposed from reactives
-  that propagate to the disposed reactives.
-  Event sources that don't have any followers left will also
-  be marked as disposed."
-  []
-  (swap! reactives #(let [{ds :disposed
-                           as :active} %
-                          new-ds (->> (for [r as, f (->> r followers (c/filter ds))] 
-                                        (do (unsubscribe r f)
-                                            (if (and (= 0 (count (followers r)))
-                                                     (satisfies? EventSource r))
-                                              r
-                                              nil)))
-                                      (c/remove nil?)
-                                      set)]
-                      {:active (clojure.set/difference as new-ds)
-                       :disposed new-ds})))
-
-
-(defn reset-reactives!
-  "Disposes and unlinks all reactives. Thereafter only the default reactives remain."
-  []
-  (swap! reactives #(let [{ds :disposed
-                           as :active} %]
-                      (assoc default-reactives
-                        :disposed (clojure.set/union ds
-                                                     (clojure.set/difference as
-                                                                             (:active default-reactives))))))
-  (unlink!)
-  (unsubscribe time nil)
-  (unsubscribe etime nil)
-  (unsubscribe exceptions nil)
-  (->> exceptions (react-with exception-handler)))
-
-
-
-;; -----------------------------------------------------------------------------
-;; implementation for propagation engine
-
-(declare execute!)
-
-
-(defn pr-reactive
-  "Returns a text representation of a signal or event source."
-  [react]
-  (if react
-    (if (satisfies? Signal react)
-      (str "S" (role react) "(" (getv react) ")")
-      (str "E" (role react)))
-    nil))
-
-(defn pr-reactives
-  "Returns a text representation of the registered signals / event sources."
-  []
-  (let [{as :active
-         ds :disposed} @reactives]
-    {:active (->> as (c/map pr-reactive))
-     :disposed (->> ds (c/map pr-reactive))}))
-
-
-(defn- pr-entry
-  "Returns a text representation of an update entry."
-  [ent]
-  (update-in ent [:reactive] pr-reactive))
-
-(defn pr-engine
-  "Returns a text representation of the current state of the propagation engine."
-  ([]
-     (pr-engine @engine))
-  ([eng]
-     (-> eng
-         (update-in [:pending-queue] #(->> % (c/map pr-entry) vec))
-         (update-in [:execution-queue] #(->> % keys (c/map pr-entry) vec))
-         (update-in [:heights] #(->> %
-                                     (c/map (fn [[r h]]
-                                              [(pr-reactive r) h]))
-                                     (into {}))))))
-
-
-
-(defn- before
-  "Returns true, if e1 has to be processed before e2. The order of processing depends
-  1. on the height: e1 is before e2 if height e1 > height e2
-  2. on the order of arrival in the queue"
-  [e1 e2]
-  (if (= (:height e1) (:height e2))
-    (< (:no e1) (:no e2))
-    (> (:height e1) (:height e2))))
-
-
-
-(defn reset-engine!
-  "Removes all update entries from the engine and resets all counters."
-  []
-  (reset! engine {:next-no 0
-                  :cycles 0
-                  :pending-queue []
-                  :execution-queue (priority-map-by (comparator before))
-                  :pending-values {}
-                  :heights {}
-                  :execution-level Integer/MAX_VALUE}))
-
-(reset-engine!)
-
-
-(defn stop-engine!
-  "Stops the timer executor which stops the scheduled engine execution."
-  []
-  (when @executor
-       (x/cancel @executor)
-       (reset! executor nil)))
-
-
-(defn start-engine!
-  "Start the engine for scheduled execution with the given resolution
-  as delay between execution cycles.
-  Sets var *auto-execute* to 0 which inhibits any implicit propagation
-  after enqueue."
-  ([]
-     (start-engine! 50))
-  ([resolution]
-     (alter-var-root #'*auto-execute* (constantly 0))
-     (stop-engine!)
-     (when-not @executor
-       (reset! executor (x/timer-executor resolution)))
-     (x/cancel @executor)
-     (x/schedule @executor execute!)
-     (pr-engine @engine)))
-
-
-(defn heights
-  "Returns a map {reactive->height} for all reactives
-  that are reachable by the given seq of reactives.
-  Links between reactives that create cycles are omitted, so the
-  graph of reachable reactives is treated as a tree.
-  The 'height' of a reactive denotes the length of the longest
-  path to a leaf of this tree. A leaf has height 0.
-  'Reactive t follows reactive s' implicates 'height s > height t'"
-  ([reacts]
-     (heights reacts {}))
-  ([reacts rhm]
-     (loop [rs reacts, m rhm]
-       (if-let [r (first rs)]
-         (if (m r)
-           (recur (rest rs) m)
-           (let [fs (followers r)]
-             (recur (rest rs) (if (empty? fs)
-                                (assoc m r 0)
-                                (let [frhm (heights fs (assoc m r -1))]
-                                  (->> fs
-                                       (c/map frhm)
-                                       (c/map #(or % 0))
-                                       (c/apply max)
-                                       inc 
-                                       (assoc m r)
-                                       (c/merge frhm)))))))
-         m))))
-
-
-(defn- make-entry
-  "Creates an entry for the pending or execution queue of the engine."
-  [no height react new-value]
-  {:no no
-   :height height
-   :reactive react
-   :value new-value})
-
-
-(defn enqueue
-  "Add the value/occurence x for the reactive either to the execution-queue
-  (if it is active, the reactive is reachable and 'downstream'
-  compared to the current execution-level). Otherwise the entry is added to
-  the pending-queue."
-  [eng react x]
-  #_(println "ENQUEUING" x "FOR" (pr-reactive react))
-  (let [{no :next-no
-         pq :pending-queue
-         exq :execution-queue
-         rhm :heights
-         exl :execution-level} eng
-         h (get rhm react)
-        entry (make-entry no h react x)]
-    (-> (if (or (empty? exq) (nil? h) (<= exl h))
-          (assoc eng :pending-queue (conj pq entry))
-          (assoc eng :execution-queue (conj exq [entry {:no no :height h}])))
-        (assoc :next-no (inc no))
-        (assoc-in [:pending-values react] x))))
-
-
-(defn begin
-  "Takes all entries from pending-queue, calculates the height in
-  the graph of reachable reactives and inserts them into the
-  execution-queue."
-  [eng]
-  (let [es (:pending-queue eng)
-        rhm (heights (c/map :reactive es))
-        exq (->> es
-                 (c/map #(assoc % :height (rhm (:reactive %))))
-                 (c/map #(vector % %))
-                 (into (:execution-queue eng)))
-        exl (or (-> exq peek first :height) Integer/MAX_VALUE)]
-    (-> eng
-        (assoc :pending-queue []
-               :execution-queue exq
-               :heights rhm
-               :execution-level exl))))
-
-
-(defn update
-  "Removes the first entry from the execution-queue and adapts
-  the execution level."
-  [eng]
-  (let [exq (:execution-queue eng)
-        entry (-> exq peek first)
-        exl (or (:height entry) Integer/MAX_VALUE)]
-    (assoc eng
-      :execution-queue (if (empty? exq) exq (pop exq))
-      :execution-level exl
-      :pending-values (dissoc (:pending-values eng) (:reactive entry)))))
-
-
-(defn propagate!
-  "Fills the execution-queue from the pending-queue.
-  Repeats publish! for first entry of the execution-queue as long
-  as the execution-queue is not empty."
-  []
-  (try (loop [eng (swap! engine begin)]
-         (when-let [e (-> eng :execution-queue peek first)]
-           (publish! (:reactive e) (:value e))
-           (recur (swap! engine update))))
-       (catch Exception ex (publish! exceptions (as-occ ex)))))
-
-
-(defn execute!
-  "Publishes new time values and calls propagate!, handles errors
-  by sending them to the exceptions event source."
-  []
-  (do (publish! etime (/ (- (now) (getv time)) 1000))
-           (publish! time (now))
-           (propagate!))  
-  (pr-engine (swap! engine update-in [:cycles] inc)))
-
-
-(defn enqueue!
-  "Adds an update entry for the given reactive and value x
-  to either the execution queue or the pending queue.
-  The var *auto-execute* specifies the number of automatic
-  propagations (useful for REPL usage and unit tests)."
-  [react x]
-  (let [stopped? (-> @engine :execution-queue empty?)]
-    (swap! engine #(enqueue % react x))
-    (when (and stopped? (nil? @executor))
-      (doseq [_ (range *auto-execute*)]
-        (propagate!)))))
+  "Lifts an expression to operate on behaviors. 
+  Returns a behavior that is updated whenever a value 
+  of a behavior referenced in the expression is updated.
 
+  Supports function application, let, cond, and, or."
+  [expr]
+  (lift* expr))
 
 
+(defmethod lift* 'symbol
+  [expr]
+  `(as-behavior ~(str expr) ~expr))
+
+
+(defmethod lift* 'fn-apply
+  [[f & args]]
+  `(lift-fn ~f ~@(lift-exprs args)))
+
+
+(defmethod lift* 'if
+  [[_ test-expr then-expr else-expr]]
+  `(lift-if (lift ~test-expr) (lift ~then-expr) (lift ~else-expr)))
+
+
+(defmethod lift* 'let
+  [[_ bindings & exprs]]
+  `(let ~(c/into []
+               (c/mapcat (fn [[sym expr]]
+                           [sym `(lift ~expr)])
+                         (partition 2 bindings)))
+     ~@(lift-exprs exprs)))
+
+
+(defmethod lift* 'cond
+  [[_ & exprs]]
+  `(lift-cond ~@(lift-exprs exprs)))
+
+
+(defmethod lift* 'and
+  [[_ & exprs]]
+  `(lift-fn and-f ~@(lift-exprs exprs)))
+
+
+(defmethod lift* 'or
+  [[_ & exprs]]
+  `(lift-fn or-f ~@(lift-exprs exprs)))
+
+
+;; ---------------------------------------------------------------------------
+;; Error handling
+
+
+(defn err-ignore
+  "Attaches an exception-handler to the function calculating the items for r.
+  Quietly ignores any exception, and does not even print a stacktrace.
+  Returns r."
+  [r]
+  (on-error *netref* r
+            (fn [result] {})))
+
+
+(defn err-retry-after
+  "Attaches an exception-handler to the function calculating the items for r.
+  The function evaluation is retried after millis milliseconds.
+  Returns r."
+  [millis r]
+  (let [netref *netref*
+        s      (scheduler netref)]
+    (on-error *netref* r
+              (fn [{:keys [input-rvts]}]
+                (sched/once s millis #(enq netref {:rvt-map (c/into {} (vec input-rvts))
+                                                   :results [{:allow-complete #{r}}]}))
+                {:dont-complete #{r}}))))
+
+
+(defn err-return
+  "Attaches an exception-handler to the function calculating the items for r.
+  Upon exception, r emits x.
+  Returns r."
+  [x r]
+  (on-error *netref* r
+            (fn [{:keys [output-reactives]}]
+              {:output-rvts (single-value x (first output-reactives))})))
+
+
+(defn err-switch
+  "Attaches an exception-handler to the function calculating the items for r.
+  Upon exception, r is permanently switched to follow reactive r-after-error.
+  Returns r."
+  [r-after-error r]
+  {:pre [(reactive? r-after-error) (reactive? r)]}
+  (on-error *netref* r
+            (fn [{:keys [input-reactives]}]
+              {:remove-by #(= (link-outputs %) [r])
+               :dont-complete #{r}
+               :add [(make-link "err" [r-after-error] [r]
+                                :link-fn default-link-fn)]})))
+
+
+(defn err-into
+  "Attaches an exception-handler to the function calculating the items for r.
+  Redirects a map containing the exception in an :exception entry and
+  the input values in an :input-rvts entry to the reactive error-r.
+  Returns r."
+  [error-r r]
+  (on-error *netref* r
+            (fn [input]
+              (enq *netref* {:rvt-map {error-r [input (now)]}}))))
+
+
+(defn err-delegate
+  "Attaches an exception-handler to the function calculating the items for r.
+  Upon exception, f is invoked with a map containing the exception and
+  the input value. The result of f must be a network stimulus and is enqueued 
+  for propagation. 
+  Returns r."
+  [f r]
+  (on-error *netref* r
+            (fn [input]
+              (enq *netref* (f input)))))
+
+
+;; ---------------------------------------------------------------------------
+;; Async execution
+
+
+(defn in-future
+  "Returns an fn-spec that wraps f to be executed by a FutureExecutor."
+  [f]
+  {:f f :executor (FutureExecutor.)})

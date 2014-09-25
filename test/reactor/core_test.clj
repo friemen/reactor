@@ -1,462 +1,665 @@
 (ns reactor.core-test
-  (:require [reactor.core :as r]
-            [reactor.execution :as x])
-  (:use clojure.test))
+  (:require [clojure.test :refer :all]
+            [reactor.core :as r]
+            [reactnet.netrefs :as refs]
+            [reactnet.scheduler :as sched]
+            [reactnet.core :as rn :refer [push! complete! pp]]
+            [reactnet.debug :as dbg]))
 
-;; fixture
 
-(defn reset-engine
+#_(do (dbg/on) (dbg/clear)
+      (with-clean-network -test)
+      (dbg/to-console (dbg/lines)))
+
+;; ---------------------------------------------------------------------------
+;; Support functions
+
+(defn with-clean-network
   [f]
-  (r/reset-engine!)
-  (alter-var-root #'r/*auto-execute* (constantly 10))
-  (f))
+  (rn/with-netref (refs/agent-netref (rn/make-network "unittests" []))
+    (f)
+    (-> rn/*netref* rn/scheduler sched/cancel-all)))
 
-(use-fixtures :each reset-engine)
+(use-fixtures :each with-clean-network)
 
-;; subscribe / unsubscribe test
+(defn wait
+  ([]
+     (wait 200))
+  ([millis]
+     (Thread/sleep millis)))
 
-(deftest subscription-test
-  (testing "Subscribe / Unsubscribe by follower"
-    (let [es (r/eventsource)]
-      (r/subscribe es :nil nil?)
-      (is (= '(:nil) (r/followers es)))
-      (r/unsubscribe es constantly) ; this must have no effect
-      (is (= '(:nil) (r/followers es)))
-      (r/unsubscribe es :nil)
-      (is (empty? (r/followers es)))))
-  (testing "Subscribe / Unscribe by fn"
-    (let [s (r/signal 0)
-          pr-fn #(println %)]
-      (r/subscribe s :foo pr-fn)
-      (is (= '(:foo) (r/followers s)))
-      (r/unsubscribe s pr-fn)
-      (is (empty? (r/followers s)))))
-  (testing "Subscribe / Unsubscribe all"
-    (let [es (r/eventsource)]
-      (r/subscribe es :nil nil?)
-      (is (= '(:nil) (r/followers es)))
-      (r/unsubscribe es nil)
-      (is (empty? (r/followers es))))))
+(defn push-and-wait!
+  [& rvs]
+  (doseq [[r v] (partition 2 rvs)]
+    (assert (rn/reactive? r))
+    (push! r v))
+  (wait))
 
 
-(deftest follows-test
-  (testing "Signal <- Signal"
-    (let [s (r/signal 0)
-          d (r/signal 0)]
-      (r/follows d s)
-      (r/setv! s 1)
-      (is (= 1 (r/getv d)))))
-  (testing "Signal <- EventSource"
-    (let [s (r/eventsource)
-          d (r/signal 0)]
-      (r/follows d s)
-      (r/raise-event! s 1)
-      (is (= 1 (r/getv d)))))
-  (testing "EventSource <- EventSource"
-    (let [s (r/eventsource)
-          d (r/eventsource)
-          x (r/hold 0 d)]
-      (r/follows d s)
-      (r/raise-event! s 1)
-      (is (= 1 (r/getv x)))))
-  (testing "EventSource <- Signal"
-    (let [s (r/signal 0)
-          d (r/eventsource)
-          x (r/hold d)]
-      (r/follows d s)
-      (r/setv! s 1)
-      (is (= 1 (r/getv x))))))
+;; ---------------------------------------------------------------------------
+;; Tests of special reactive factories
 
 
-;; tests for combinators on eventsources
-
-(deftest pass-test
-  (let [exec1used (atom false)
-        exec1 (reify reactor.execution.Executor
-               (schedule [_ f] (reset! exec1used true) (f)))
-        e1 (r/eventsource)
-        sig1 (->> e1 (r/pass exec1) r/hold)
-        exec2used (atom false)
-        exec2 (reify reactor.execution.Executor
-               (schedule [_ f] (reset! exec2used true) (f)))
-        sig2 (->> sig1 (r/pass exec2))]
-    (r/raise-event! e1 "Foo")
-    (is @exec1used) ; check that executor 1 was actually used
-    (is (= "Foo" (r/getv sig1)))
-    (is @exec2used) ; check that executor 2 was actually used
-    (is (= "Foo" (r/getv sig2)))))
+(deftest fnbehavior-seqstream-test
+  (let [r       (atom [])
+        seconds (r/fnbehavior #(long (/ (System/currentTimeMillis) 1000)))
+        numbers (r/seqstream (range 10))
+        c       (->> (r/map vector seconds numbers) (r/swap! r conj))]
+    (wait)
+    (is (= (range 10) (->> r deref (map second))))))
 
 
-(deftest hold-test
-  (let [e (r/eventsource)
-        s1 (->> e r/hold)
-        s2 (->> e (r/hold "Bar"))]
-    (is (= nil (r/getv s1)))
-    (is (= "Bar" (r/getv s2)))
-    (r/raise-event! e "Foo")
-    (is (= "Foo" (r/getv s1)))
-    (is (= "Foo" (r/getv s2)))))
+(deftest just-test
+  (testing "Just one value"
+    (let [r  (atom [])
+          j  (r/just 42)]
+      (wait)
+      (is (rn/pending? j))
+      (r/swap! r conj j)
+      (wait)
+      (is (= [42] @r))
+      (is (rn/completed? j))))
+  (testing "A function invocation"
+    (let [r  (atom [])
+          e  (->> (constantly :foo) r/just (r/swap! r conj))]
+      (wait)
+      (is (= [:foo] @r))))
+  (testing "A future"
+    (let [r  (atom [])
+          e  (->> (r/in-future (fn [] 
+                                 (Thread/sleep 300)
+                                 :foo))
+                  r/just
+                  (r/swap! r conj))]
+      (wait)
+      (is (= [] @r))
+      (wait)
+      (is (= [:foo] @r)))))
 
 
-(deftest map-test
-  (let [e1 (r/eventsource)
-        e2 (->> e1 (r/map (partial * -1)))
-        s2 (->> e2 r/hold)
-        e3 (->> e1 (r/map 42))
-        s3 (->> e3 r/hold)]
-    (r/raise-event! e1 13)
-    (is (= -13 (r/getv s2)))
-    (is (= 42 (r/getv s3)))))
+(deftest sample-test
+  (testing "Sample constant value"
+    (let [r   (atom [])
+          s   (->> :foo (r/sample 100) (r/swap! r conj))]
+      (wait 500)
+      (is (<= 4 (count @r)))
+      (is (= [:foo :foo :foo :foo] (take 4 @r)))))
+  (testing "Sample by invoking a function"
+    (let [r   (atom [])
+          s   (->> #(count @r) (r/sample 100) (r/swap! r conj))]
+      (wait 500)
+      (is (<= 4 (count @r)))
+      (is (= [0 1 2 3] (take 4 @r)))))
+  (testing "Sample from a ref"
+    (let [r   (atom [])
+          a   (atom 0)
+          s   (->> a (r/sample 100) (r/swap! r conj))]
+      (wait 150)
+      (reset! a 1)
+      (wait 400)
+      (is (<= 4 (count @r)))
+      (is (= [0 0 1 1] (take 4 @r)))))
+  (testing "Cancel sample task"
+    (let [r   (atom [])
+          s   (->> 42 (r/sample 100) (r/swap! r conj))]
+      (wait 150)
+      (r/complete! s)
+      (wait 200)
+      (is (<= 2 (count @r))))))
 
 
-(deftest filter-test
-  (let [e1 (r/eventsource)
-        e2 (->> e1 (r/filter #(not= "Foo" %)))
-        sig (->> e2 r/hold)]
-    (is (nil? (r/getv sig)))
-    (r/raise-event! e1 "Foo")
-    (is (nil? (r/getv sig))) ; ensure that Foo was filtered out
-    (r/raise-event! e1 "Bar")
-    (is (= "Bar" (r/getv sig))))) ; check that Bar passed
+(deftest timer-test
+  (let [r   (atom [])
+        t   (->> (r/timer 100) (r/swap! r conj))]
+    (wait 500)
+    (r/complete! t)
+    (is (= [0 1 2 3] (take 4 @r)))
+    (wait 200)
+    (is (<= (count @r) 6))))
 
 
-(deftest delay-test
-  (let [e1 (r/eventsource)
-        s (->> e1 (r/delay 1000) r/hold)]
-    (r/raise-event! e1 "Bar")
-    (x/wait 200)
-    (is (= nil (r/getv s)))
-    (r/raise-event! e1 "Foo")
-    (x/wait 900)
-    (is (= "Bar" (r/getv s)))
-    (x/wait 200)
-    (is (= "Foo" (r/getv s)))))
+;; ---------------------------------------------------------------------------
+;; Tests of combinators
+
+(deftest amb-test
+  (let [r   (atom [])
+        e1  (r/eventstream)
+        e2  (r/eventstream)
+        c   (->> (r/amb e1 e2) (r/swap! r conj))]
+    (push-and-wait! e2 :foo e1 :bar e2 :baz)
+    (is (= [:foo :baz] @r))
+    (complete! e2)
+    (wait)
+    (is (rn/completed? c))))
 
 
-(deftest calm-test
-  (let [e (r/eventsource)
-        sum (->> e (r/calm 50) (r/reduce + 0))]
-    (r/raise-event! e 1)
-    (x/wait 10)
-    (r/raise-event! e 40) ; cancels the first event
-    (x/wait 60)
-    (r/raise-event! e 2)
-    (x/wait 60)
-    (is (= 42 (r/getv sum)))))
+(deftest any-test
+  (testing "The first true results in true."
+    (let [r   (atom [])
+          e1  (r/eventstream)
+          c   (->> e1 r/any (r/swap! r conj))]
+      (apply push-and-wait! (interleave (repeat e1) [false true]))
+      (is (= [true] @r))))
+  (testing "False is emitted only after completion."
+    (let [r   (atom [])
+          e1  (r/eventstream)
+          c   (->> e1 r/any (r/swap! r conj))]
+      (apply push-and-wait! (interleave (repeat e1) [false false]))
+      (is (= [] @r))
+      (complete! e1)
+      (wait)
+      (is (= [false] @r)))))
 
 
-(deftest merge-test
-  (let [e1 (r/eventsource)
-        e2 (r/eventsource)
-        e3 (r/merge e1 e2)
-        s3 (->> e3 r/hold)]
-    (r/raise-event! e1 42)
-    (is (= 42 (r/getv s3)))
-    (r/raise-event! e2 13)
-    (is (= 13 (r/getv s3)))))
-
-
-(deftest switch-test
-  (let [e1 (r/eventsource)
-        sig1 (r/signal 0)
-        sig2 (->> e1 (r/switch sig1))
-        sig3 (r/signal 10)]
-    (r/setv! sig1 42)
-    (is (= 42 (r/getv sig2))) ; ensure that sig2 follows sig1
-    (r/raise-event! e1 sig3) ; emit sig3 as event
-    (is (= 10 (r/getv sig2))) ; now sig2 show reflect sig3
-    (r/setv! sig1 4711) ; change sig1
-    (is (= 10 (r/getv sig2))) ; sig1 change must not get propagated to sig2
-    (r/setv! sig3 13) ; change sig3
-    (is (= 13 (r/getv sig2))))) ; make sure sig2 follows sig3
-
-
-(deftest reduce-test
-  (let [e (r/eventsource)
-        sum (->> e (r/reduce + 0))]
-    (r/raise-event! e 1)
-    (r/raise-event! e 41)
-    (is (= 42 (r/getv sum)))))
-
-
-(deftest reduce-t-test
-  (let [speed (r/signal 0)
-        ticks (r/eventsource)
-        pos (->> (r/merge (->> speed
-                               r/changes
-                               (r/map first))
-                          (->> ticks
-                               (r/map second)))
-                 (r/reduce-t (fn [pos s elapsed]
-                               (+ pos (* (or s 0) elapsed)))
-                             0))]
-    (r/setv! speed 5)
-    (x/wait 10)
-    (r/raise-event! ticks nil)
-    (is (>= 60 (r/getv pos)))))
-
-
-(deftest snapshot-test
-  (let [e (r/eventsource)
-        s1 (r/signal 42)
-        s2 (->> e (r/snapshot s1) (r/hold 13))]
-    (is (= 13 (r/getv s2)))
-    (r/raise-event! e "Foo")
-    (is (= 42 (r/getv s2)))))
-
-
-;; tests for combinators on signals
-
-(deftest behind-test
-  (let [s1 (r/signal 0)
-        s2 (r/behind 2 s1)]
-    (is (= 0 (r/getv s2)))
-    (r/setv! s1 1) (r/setv! s1 2)
-    (is (= 0 (r/getv s2)))
-    (r/setv! s1 3)
-    (is (= 1 (r/getv s2)))))
+(deftest buffer-test
+  (testing "Buffer by number of items"
+    (let [r   (atom [])
+          e1  (r/eventstream)
+          c   (->> e1 (r/buffer-c 2) (r/swap! r conj))]
+      (apply push-and-wait! (interleave (repeat e1) [1 2 3 4 5 6 7]))
+      (is (= [[1 2] [3 4] [5 6]] @r))
+      (complete! e1)
+      (wait)
+      (is (= [[1 2] [3 4] [5 6] [7]] @r))))
+  (testing "Buffer by time"
+    (let [r   (atom [])
+          e1  (r/eventstream)
+          c   (->> e1 (r/buffer-t 500) (r/swap! r conj))]
+      (push-and-wait! e1 42)
+      (is (= [] @r))
+      (wait 500)
+      (is (= [[42]] @r))))
+  (testing "Buffer by time and number of items"
+    (let [r   (atom [])
+          e1  (r/eventstream)
+          c   (->> e1 (r/buffer 3 500) (r/swap! r conj))]
+      (push-and-wait! e1 42 e1 43 e1 44 e1 45)
+      (is (= [[42 43 44]] @r))
+      (wait 500)
+      (is (= [[42 43 44] [45]] @r))
+      (push! e1 46)
+      (complete! e1)
+      (wait)
+      (is (= [[42 43 44] [45] [46]] @r)))))
 
 
 (deftest changes-test
-  (let [n (r/signal 0)
-        alarm-events (->> n (r/changes #(when (> % 10) "ALARM!")))
-        alarm-signal (->> alarm-events (r/map second) r/hold)]
-    (r/setv! n 9)
-    (is (= nil (r/getv alarm-signal))) ; no ALARM must be set
-    (r/setv! n 11)
-    (is (= "ALARM!" (r/getv alarm-signal))))) ; check that ALARM is set
+  (let [r   (atom [])
+        b   (r/behavior nil)
+        c   (->> b r/changes (r/swap! r conj))]
+    (push-and-wait! b 1 b 1 b 42)
+    (is (= [[nil 1] [1 42]] @r))))
 
 
-(deftest setvs!-test
-  (let [sigs (map #(r/signal %) [1 2 3 4])]
-    (r/setvs! sigs [41 42 43])
-    (is (= [41 42 43 4] (map r/getv sigs)))))
+(deftest concat-test
+  (let [r   (atom [])
+        e1  (r/eventstream :label "e1")
+        e2  (r/eventstream :label "e2")
+        s   (r/seqstream [:foo :bar :baz])
+        c   (->> e1 (r/concat s e1 e2) (r/swap! r conj))]
+    (push-and-wait! e2 1 e2 2 e2 3
+                e1 "FOO" e1 "BAR" e1 ::rn/completed)
+    (is (= [:foo :bar :baz "FOO" "BAR" 1 2 3] @r))))
 
 
-(deftest bind!-test
-  (let [inputsigs [(r/signal 0) (r/signal 0)]
-        prod (r/signal nil)]
-    (r/bind! prod
-             (fn [n1 n2] (* n1 n2))
-             inputsigs)
-    (r/setvs! inputsigs [2 3])
-    (is (= 6 (r/getv prod)))))
+(deftest count-test
+  (let [r  (atom [])
+        e  (r/eventstream)
+        c  (->> e r/count (r/swap! r conj))]
+    (push-and-wait! e :foo e :bar e :baz)
+    (is (= [1 2 3] @r))
+    (complete! e)
+    (wait)
+    (is (rn/completed? c))))
 
 
-(deftest apply-test
-  (let [n1 (r/signal 0)
-        n2 (r/signal 0)
-        n1half (r/apply / n1 2) ; always contains the half of n1's value 
-        sum (r/apply + n1 n2) ; always contains the sum of n1 and n2
-        sum>10 (->> sum
-                    (r/changes #(when (> % 10) "ALARM!"))
-                    (r/react-with #(println %)))]
-    (r/setv! n1 4)
-    (is (= 4 (r/getv sum))) ; check that sum is up-to-date
-    (is (= 2 (r/getv n1half))) ; check that n1half is up-to-date
-    (r/setv! n2 8)
-    (is (= 12 (r/getv sum))))) ; check that sum is up-to-date
+(deftest debounce-test
+  (let [r  (atom [])
+        e  (r/eventstream)
+        c  (->> e (r/debounce 250) (r/swap! r conj))]
+    (push-and-wait! e :foo e :bar e :baz)
+    (is (= [] @r))
+    (wait 100)
+    (is (= [:baz] @r))
+    (rn/push! e :foo)
+    (wait 300)
+    (is (= [:baz :foo] @r))))
 
-;; tests for lifting of expressions
 
-(deftest lift-let-test
-  (let [n1 (r/signal 2)
-        n2 (r/signal 3)
-        n1*3+n2 (r/lift (let [n1*2 (+ n1 n1)
-                              n1*3 (+ n1*2 n1)]
-                          (+ n2 n1*3)))]
-    (is (= 9 (r/getv n1*3+n2)))
-    (r/setvs! [n1 n2] [3 4])
-    (is (= 13 (r/getv n1*3+n2)))))
+(deftest delay-test
+  (let [r  (atom [])
+        e  (r/eventstream)
+        c  (->> e (r/delay 500) (r/swap! r conj))]
+    (push-and-wait! e :foo)
+    (is (= [] @r))
+    (wait 500)
+    (is (= [:foo] @r))))
+
+
+(deftest distinct-test
+  (let [r  (atom [])
+        e  (r/eventstream)
+        c  (->> e r/distinct (r/swap! r conj))]
+    (push-and-wait! e :foo e :bar e :foo e :baz e :bar)
+    (is (= [:foo :bar :baz] @r))))
+
+
+(deftest drop-test
+  (let [r  (atom [])
+        e  (r/eventstream)
+        c  (->> e (r/drop 2) (r/swap! r conj))]
+    (push-and-wait! e :foo e :bar e :baz)
+    (is (not (rn/pending? e)))
+    (is (= [:baz] @r))
+    (complete! e)
+    (wait)
+    (is (rn/completed? c))))
+
+
+(deftest drop-last-test
+  (let [r  (atom [])
+        e  (r/eventstream)
+        c  (->> e (r/drop-last 2) (r/swap! r conj))]
+    (apply push-and-wait! (interleave (repeat e) (range 6)))
+    (is (= [0 1 2 3] @r))
+    (push-and-wait! e 6 e ::rn/completed)
+    (is (= [0 1 2 3 4] @r))
+    (is (rn/completed? c))))
+
+
+(deftest drop-while-test
+  (let [r  (atom [])
+        e  (r/eventstream)
+        c  (->> e (r/drop-while (partial >= 5)) (r/swap! r conj))]
+    (apply push-and-wait! (interleave (repeat e) (range 10)))
+    (is (= [6 7 8 9] @r))))
+
+
+(deftest every-test
+  (testing "Direct completion emits true."
+    (let [r  (atom [])
+          e  (r/eventstream)
+          c  (->> e r/every (r/swap! r conj))]
+      (complete! e)
+      (wait)
+      (is (= [true] @r))))
+  (testing "The first False results in False."
+    (let [r  (atom [])
+          e  (r/eventstream)
+          c  (->> e r/every (r/swap! r conj))]
+      (apply push-and-wait! (interleave (repeat e) [true false]))
+      (is (= [false] @r))))
+  (testing "True is emitted only after completion."
+    (let [r  (atom [])
+          e  (r/eventstream)
+          c  (->> e r/every (r/swap! r conj))]
+      (apply push-and-wait! (interleave (repeat e) [true true]))
+      (is (= [] @r))
+      (complete! e)
+      (wait)
+      (is (= [true] @r)))))
+
+
+(deftest filter-test
+  (let [r        (atom [])
+        values   (range 10)
+        expected (filter odd? values)
+        e        (r/eventstream)
+        c        (->> e (r/filter odd?) (r/swap! r conj))]
+    (apply push-and-wait! (interleave (repeat e) values))
+    (is (= [1 3 5 7 9] @r))
+    (complete! e)
+    (wait)
+    (is (rn/completed? c))))
+
+
+(deftest flatmap-test
+  (let [r       (atom [])
+        values  (range 5)
+        f       (fn [x] (->> x r/just (r/map (partial * 2)) (r/map (partial + 1))))
+        e       (r/eventstream)
+        c       (->> e (r/flatmap f) (r/scan + 0) (r/swap! r conj))]
+    (apply push-and-wait! (interleave (repeat e) values))    
+    (is (= [1 4 9 16 25] @r))
+    (complete! e)
+    (wait)
+    (is (rn/completed? c))))
+
+
+(deftest into-test
+  (let [e  (r/eventstream)
+        b1 (r/behavior :label "b1")
+        b2 (r/behavior :label "b2")]
+    (->> e (r/into b1 b2))
+    (push-and-wait! e 1)
+    (is (and (= @b1 1) (= @b2 1)))))
+
+
+(deftest map-test
+  (testing "Two eventstreams"
+    (let [r   (atom [])
+          e1  (r/eventstream :label "e1")
+          e2  (r/eventstream :label "e2")
+          c   (->> (r/map + e1 e2) (r/swap! r conj))]
+      (push-and-wait! e1 1 e1 2 e2 1 e2 2)
+      (is (= [2 4] @r))))
+  (testing "Two behaviors"
+    (let [r   (atom [])
+          b1  (r/behavior 0 :label "b1")
+          b2  (r/behavior 0 :label "b2")
+          c   (->> (r/map + b1 b2) (r/swap! r conj))]
+      (push-and-wait! b1 1 b1 2 b2 1 b2 2)
+      (is (= [0 1 2 3 4] @r))))
+  (testing "One eventstream, one behavior"
+    (let [r   (atom [])
+          e   (r/eventstream)
+          b   (r/behavior 0 :label "b")
+          c   (->> (r/map + e b) (r/swap! r conj))]
+      (push-and-wait! b 1 b 2 e 1 e 2)
+      (is (= [3 4] @r))))
+  (testing "One infinite eventstream, one finite eventstream"
+    (let [r   (atom [])
+          e1  (r/eventstream :label "e1")
+          e2  (r/seqstream (repeat 42))
+          c   (->> (r/map + e1 e2) (r/swap! r conj))]
+      (push-and-wait! e1 1 e1 2 e1 3)
+      (is (= [43 44 45] @r))
+      (complete! e1)
+      (wait)
+      (is (rn/completed? c)))))
+
+
+(deftest mapcat-test
+  (let [r  (atom [])
+        e  (r/eventstream)
+        c  (->> e (r/mapcat :items) (r/swap! r conj))]
+    (push-and-wait! e {:name "Me" :items ["foo" "bar" "baz"]})
+    (is (= ["foo" "bar" "baz"] @r))))
+
+
+(deftest merge-test
+  (testing "Merge preserves order"
+    (let [r        (atom [])
+          streams  (for [i (range 5)]
+                     (r/eventstream :label (str "e" i)))
+          expected (repeatedly 400 #(rand-int 100))
+          c        (->> streams (apply r/merge) (r/swap! r conj))]
+      (doseq [x expected]
+        (push! (rand-nth streams) x))
+      (wait 1500)
+      (is (= expected @r))))
+  (testing "Merge completes when last input completes"
+    (let [e1 (r/eventstream :label "e1")
+          e2 (r/eventstream :label "e2")
+          c  (r/merge e1 e2)]
+      (complete! e1)
+      (complete! e2)
+      (wait)
+      (is (rn/completed? c)))))
+
+
+(deftest reduce-t
+  (let [r      (atom [])
+        values (range 1 5)
+        e      (r/eventstream)
+        c      (->> e (r/reduce + 0) (r/swap! r conj))]
+    (apply push-and-wait! (interleave (repeat e) values))
+    (is (= [] @r))
+    (complete! e)
+    (wait)
+    (is (= [10] @r))))
+
+
+(deftest remove-test
+  (let [r        (atom [])
+        values   (range 10)
+        expected (remove odd? values)
+        e        (r/eventstream)
+        c        (->> e (r/remove odd?) (r/swap! r conj))]
+    (apply push-and-wait! (interleave (repeat e) values))
+    (is (= [0 2 4 6 8] @r))))
+
+
+(deftest scan-test
+  (let [r      (atom [])
+        values (range 1 5)
+        e      (r/eventstream)
+        c      (->> e (r/scan + 0) (r/swap! r conj))]
+    (apply push-and-wait! (interleave (repeat e) values))
+    (is (= [1 3 6 10] @r))))
+
+
+(deftest sliding-buffer-test
+  (let [r      (atom [])
+        values (range 6)
+        e      (r/eventstream)
+        c      (->> e (r/sliding-buffer 3) (r/swap! r conj))]
+    (apply push-and-wait! (interleave (repeat e) values))
+    (is (= [[0] [0 1] [0 1 2] [1 2 3] [2 3 4] [3 4 5]] @r))))
+
+
+(deftest snapshot-test
+  (let [r   (atom [])
+        b   (r/behavior 42)
+        e   (r/eventstream)
+        c   (->> e (r/snapshot b) (r/swap! r conj))]
+    (push-and-wait! e 1 b 43 e 2 e 3)
+    (is (= [42 43 43] @r))))
+
+
+(deftest switch-test
+  (let [r   (atom [])
+        e1  (r/eventstream :label "e1")
+        e2  (r/eventstream :label "e2")
+        sw  (r/eventstream :label "streams")
+        c   (->> sw r/switch (r/swap! r conj))]
+    (push-and-wait! e1 "A" e1 "B" e2 "C" sw e2 sw e1)
+    (is (= ["C" "A" "B"] @r))))
+
+
+(deftest take-test
+  (let [r  (atom [])
+        e  (r/eventstream)
+        c  (->> e (r/take 2) (r/swap! r conj))]
+    (push-and-wait! e :foo e :bar e :baz)
+    (is (= [:foo :bar] @r))
+    (is (rn/completed? c))
+    (is (rn/pending? e))))
+
+
+(deftest take-last-test
+  (let [r  (atom [])
+        e  (r/eventstream)
+        c  (->> e (r/take-last 3) (r/swap! r conj))]
+    (apply push-and-wait! (interleave (repeat e) (range 5)))
+    (is (= [] @r))
+    (complete! e)
+    (wait)
+    (is (= [2 3 4] @r))))
+
+
+(deftest take-while-test
+  (let [r  (atom [])
+        e  (r/eventstream)
+        c  (->> e (r/take-while (partial >= 5)) (r/swap! r conj))]
+    (apply push-and-wait! (interleave (repeat e) (range 10)))
+    (is (= [0 1 2 3 4 5] @r))))
+
+
+(deftest throttle-test
+  (testing "Sending all at once"
+    (let [r  (atom [])
+          e  (r/eventstream)
+          c  (->> e (r/throttle identity 500 10) (r/swap! r conj))]
+      (push-and-wait! e :foo e :bar e :baz)
+      (is (= [] @r))
+      (is (not (rn/pending? e)))
+      (wait 500)
+      (is (= [[:foo :bar :baz]] @r))))
+  (testing "Too many items for the throttle queue to hold"
+    (let [r  (atom [])
+          e  (r/eventstream)
+          c  (->> e (r/throttle identity 300 5) (r/swap! r conj))]
+      (apply push-and-wait! (interleave (repeat e) (range 7)))
+      (is (= [] @r))
+      (is (rn/pending? e))
+      (wait 200)
+      (is (= [[0 1 2 3 4]] @r))
+      (wait 400)
+      (is (= [[0 1 2 3 4] [5 6]] @r)))))
+
+
+(deftest unsubscribe-test
+  (let [r  (atom [])
+        e  (r/eventstream)
+        c  (->> e
+                (r/map inc)
+                (r/subscribe :s (partial swap! r conj)))]
+    (push-and-wait! e 1 e 2 e 3)
+    (is (= [2 3 4] @r))
+    (r/unsubscribe :s c)
+    (push-and-wait! e 1 e 2 e 3)
+    (is (= [2 3 4] @r))))
+
+
+;; ---------------------------------------------------------------------------
+;; Tests for expression lifting
+
+
+(deftest lift-fn-test
+  (let [x (r/behavior 2 :label "x")
+        y (r/behavior 2 :label "y")
+        z (r/lift (* 3 x y))]
+    (wait)
+    (is (= @z 12))
+    (push-and-wait! x 3 y 1)
+    (is (= @z 9))))
 
 
 (deftest lift-if-test
-  (let [n1 (r/signal -1)
-        n2 (r/signal 1)
-        ifelses (r/lift (if (> n1 0) n2 (+ n1 n2)))
-        ifs (r/lift (if (< n1 0) n1))]
-    (is (= 0 (r/getv ifelses)))
-    (is (= -1 (r/getv ifs)))
-    (r/setvs! [n1 n2] [2 5])
-    (is (= 5 (r/getv ifelses)))
-    (is (= nil (r/getv ifs)))
-    (r/setv! n2 6)
-    (is (= (r/getv ifelses)))))
+  (let [x (r/behavior 2 :label "x")
+        z (r/lift (if (> x 2) (dec x) (inc x)))]
+    (wait)
+    (is (= @z 3))
+    (push-and-wait! x 3)
+    (is (= @z 2))))
 
 
-(deftest lift-threading-test
-  (testing "lift ->>"
-    (let [s (r/signal 1)
-          t (r/lift (->> s (+ 1)))
-          u (r/lift (->> 2 (* s)))]
-      (is (= 2 (r/getv t)))
-      (is (= 2 (r/getv u)))
-      (r/setv! s 3)
-      (is (= 4 (r/getv t)))
-      (is (= 6 (r/getv u)))))
-  (testing "lift ->"
-    (let [s (r/signal 3)
-          t (r/lift (-> s inc (/ 2)))]
-      (is (= 2 (r/getv t))))))
+(deftest lift-let-test
+  (let [x (r/behavior 2 :label "x")
+        z (r/lift (let [y (+ x 2)] (+ x y)))]
+    (wait)
+    (is (= @z 6))
+    (push-and-wait! x 3)
+    (is (= @z 8))))
+
+
+(deftest lift-cond-test
+  (let [x (r/behavior 2 :label "x")
+        z (r/lift (cond
+                   (<= x 1) (+ 9 x)
+                   (<= x 4) (+ 4 x)
+                   :else    x))]
+    (wait)
+    (is (= @z 6))
+    (push-and-wait! x 4)
+    (is (= @z 8))
+    (push-and-wait! x 10)
+    (is (= @z 10))))
 
 
 (deftest lift-and-test
-  (let [b1 (r/signal true)
-        b2 (r/signal false)
-        ands (r/lift (and b1 b2))]
-    (is (= false (r/getv ands)))
-    (r/setvs! [b1 b2] [1 true])
-    (is (= true (r/getv ands)))))
+  (let [x (r/behavior true :label "x")
+        y (r/behavior false :label "y")
+        z (r/lift (and x y))]
+    (wait)
+    (is (not @z))
+    (push-and-wait! y 1)
+    (is @z)
+    (push-and-wait! x nil)
+    (is (not @z))))
 
 
 (deftest lift-or-test
-  (let [b1 (r/signal true)
-        b2 (r/signal false)
-        ors (r/lift (or b1 b2))]
-    (is (= true (r/getv ors)))
-    (r/setvs! [b1 b2] [1 true])
-    (is (= 1 (r/getv ors)))
-    (r/setvs! [b1 b2] [nil false])
-    (is (= false (r/getv ors)))))
+  (let [x (r/behavior true :label "x")
+        y (r/behavior false :label "y")
+        z (r/lift (or x y))]
+    (wait)
+    (is @z)
+    (push-and-wait! x nil)
+    (is (not @z))
+    (push-and-wait! y 1)
+    (is @z)))
 
 
-(deftest lift-test
-  (testing "Simple expression lifting"
-    (let [n1 (r/signal 0)
-          plus10*2 (r/lift (* 2 (+ 10 n1)))]
-      (r/setv! n1 4)
-      (is (= 28 (r/getv plus10*2)))))
-  (testing "Expressions with a reference to the new signal <S>"
-    (binding [r/*auto-execute* 0]
-      (let [time (r/signal 0)
-            elapsed (->> time
-                         r/changes
-                         (r/map (fn [[t-1 t]] (- t t-1)))
-                         (r/hold 0))
-            s (r/lift (+ <S> (* elapsed 2)))]
-        (is (= 0 (r/getv s)))
-        (r/setv! time 2)
-        (r/execute!)
-        (is (= 4 (r/getv s))))))
-  (testing "Expression with a reference to elapsed time r/etime"
-    (r/start-engine! 40)
-    (let [s (r/signal 0)
-          y (r/lift 0 (+ <S> (* s r/etime 1000)))]
-      (is (= 0 (r/getv y)))
-      (r/setv! s 1)
-      (x/wait 150)
-      (r/stop-engine!)
-      #_(println (r/getv y))
-      (is (and (< 100 (r/getv y)) (< (r/getv y) 170))))))
+;; ---------------------------------------------------------------------------
+;; Tests of error handling
+
+(defn- id-or-ex
+  [x]
+  (if (= 42 x)
+    (throw (IllegalArgumentException. (str x)))
+    x))
 
 
-
-;; naive state machine implementation for reduce test
-
-(defn- illegalstate
-  [s evt]
-  (throw (IllegalStateException. (str "Action " (:action evt) " is not expected in state " (:state s)))))
-
-(defmulti draw-statemachine
-  (fn [s evt] (:state s))
-  :default :idle)
-
-(defmethod draw-statemachine :idle
-  [s evt]
-  (case (:action evt)
-      :left-press {:state :drawing
-                   :path [(:pos evt)]}
-      :move s
-      (illegalstate s evt)))
-
-(defmethod draw-statemachine :drawing
-  [s evt]
-  (let [newpath (conj (:path s) (:pos evt))]
-    (case (:action evt)
-      :left-release (do (println "Drawing" newpath)
-                        {:state :idle
-                         :path newpath})
-      :move {:state :drawing
-             :path newpath}
-      (illegalstate s evt))))
-
-(defn mouse-action [action position] {:action action, :pos position})
-
-;; test demonstrating how a statemachine can be used
-;; in conjunction with event sources and reduce
-
-(deftest reduce-sm-test
-  (let [initial-state {:state :idle, :path []}
-        mouse-events (r/eventsource)
-        drawing-state (->> mouse-events (r/reduce draw-statemachine initial-state))]
-    (r/raise-event! mouse-events (mouse-action :left-press [1 2]))
-    (is (= {:state :drawing
-            :path [[1 2]]}
-           (r/getv drawing-state)))
-    (r/raise-event! mouse-events (mouse-action :move [3 4]))
-    (r/raise-event! mouse-events (mouse-action :left-release [5 6]))
-    (is (= {:state :idle
-            :path [[1 2] [3 4] [5 6]]}
-           (r/getv drawing-state)))))
+(deftest err-ignore-test
+  (let [r (atom [])
+        e (r/eventstream)
+        c (->> e
+               (r/map id-or-ex)
+               r/err-ignore
+               (r/swap! r conj))]
+    (push-and-wait! e 1 e 2 e 42 e 3)
+    (is (= [1 2 3] @r))))
 
 
-;; test of external propagation
-
-(deftest heights-test
-  (let [r (r/signal 2)
-        q (r/signal 1)
-        s (r/lift (+ r q <S>))
-        e (r/changes s)
-        t (r/hold e)]
-    (let [rhm (r/heights [r q])]
-      (is (= 0 (rhm t)))
-      (is (= 1 (rhm e)))
-      (is (= 2 (rhm s)))
-      (is (= 4 (rhm r) (rhm q))))
-    (let [rhm (r/heights [e])]
-      (is (nil? (rhm s)))
-      (is (= 0 (rhm t)))
-      (is (= 1 (rhm e))))))
-
-;; test for registration in reactives and disposal
+(deftest err-retry-after-test
+  (let [r (atom [])
+        n (atom 2)
+        e (r/eventstream)
+        c (->> e
+               (r/map (fn [x] (if (and (= x 42)
+                                       (< 0 (swap! n dec)))
+                                (throw (IllegalArgumentException. (str x)))
+                                x)))
+               (r/err-retry-after 50)
+               (r/swap! r conj))]
+    (push-and-wait! e 1 e 2 e 42 e 3)
+    (is (= 0 @n))
+    (is (= [1 2 3 42] @r))))
 
 
-(deftest exceptions-es-test
-  (binding [r/*default-exception-handler* (fn [_])]
-    (let [throwing (fn [_] (throw (IllegalArgumentException. "Test Dummy Exception")))
-          s (r/signal 0)
-          last-ex (->> r/exceptions r/hold)]
-      (->> s (r/process-with throwing))
-      (r/setv! s 1)
-      (is (instance? IllegalArgumentException (r/getv last-ex))))))
+(deftest err-return-test
+  (let [r  (atom [])
+        e  (r/eventstream)
+        c  (->> e
+               (r/map id-or-ex)
+               (r/err-return 99)
+               (r/swap! r conj))]
+    (push-and-wait! e 1 e 2 e 42 e 3)
+    (is (= [1 2 99 3] @r))))
 
 
-(deftest registration-test
-  (reset! r/reactives r/default-reactives)
-  (let [s (r/signal 0)]
-    (is ((-> r/reactives deref :active) s))
-    (is (empty? (-> r/reactives deref :disposed)))))
+(deftest err-switch-test
+  (let [r  (atom [])
+        e1 (r/eventstream :label "e1")
+        e2 (r/seqstream (range 5) :label "e2")
+        c (->> e1
+               (r/map id-or-ex)
+               (r/err-switch e2)
+               (r/swap! r conj))]
+    (push-and-wait! e1 1 e1 2 e1 42 e1 3)
+    (is (= [1 2 0 1 2 3 4] @r))))
 
 
-(deftest dispose-test
-  (reset! r/reactives r/default-reactives)
-  (let [s (r/signal 0)
-        t (->> s r/changes r/hold)]
-    (r/dispose! t)
-    (is (r/disposed? t))
-    (is (not (r/disposed? s)))))
-
-
-(deftest unlink-test
-  (reset! r/reactives r/default-reactives)
-  (let [s (r/signal 0)
-        t (->> s r/changes r/hold)]
-    (is (= 6 (-> r/reactives deref :active count)))
-    (r/dispose! t)
-    (r/unlink!) ; remove t
-    (r/unlink!) ; remove the changes event source
-    (is (= 4 (-> r/reactives deref :active count)))
-    (r/unlink!) ; must not have any effect
-    (is (= 4 (-> r/reactives deref :active count)))
-    (is (not (r/disposed? s)))
-    (is (r/disposed? t))))
+(deftest err-into-test
+  (let [r      (atom [])
+        errors (r/eventstream :label "errors")
+        e      (r/eventstream :label "e")
+        c      (->> e
+                    (r/map id-or-ex)
+                    (r/err-into errors)
+                    (r/swap! r conj))]
+    (push-and-wait! e 1 e 2 e 42 e 3)
+    (is (= [1 2 3] @r))
+    (is (instance? IllegalArgumentException (-> errors deref :exception)))))

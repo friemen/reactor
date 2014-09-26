@@ -4,6 +4,10 @@ A tool for reactive programming with Clojure.
 
 [![Build Status](https://travis-ci.org/friemen/reactor.png?branch=master)](https://travis-ci.org/friemen/reactor)
 
+[![Clojars Project](http://clojars.org/reactor/latest-version.svg)](http://clojars.org/reactor)
+
+[API docs](http://friemen.github.com/reactor)
+
 The purpose of the factories and combinators as implemented here 
 is to support declarative specifications of eventstream and behavior
 processing chains using the `->>` macro and familiar functions
@@ -13,20 +17,15 @@ Status of this library: it already offers many combinators that you
 can find in other libraries for reactive programming. So it's likely
 that you can use it right now to build interesting solutions. However,
 because this whole subject is complex and my implementation is young,
-I would not recommend to use it for anything else then educational
+I would not recommend to use it for anything else than educational
 purposes.  I'm currently in the process of improving tests and
 creating more complex scenarios, which will help to make it more
 mature.
 
-[API docs](http://friemen.github.com/reactor)
 
 ## Getting started
 
-To use it add the following dependency to your project.clj
-
-```clojure
-[reactor "0.7.0"]
-```
+To use it you need a dependency declaration in your project.clj, see above.
 
 In any namespace issue
 
@@ -141,28 +140,8 @@ TODO explain how to put function invocation to different threads.
 See [reactor-samples project](https://github.com/friemen/reactor-samples).
 
 
-References
-----------
 
-E.Amsden - [A Survey of Functional Reactive Programming](http://www.cs.rit.edu/~eca7215/frp-independent-study/Survey.pdf)
-
-A.Courtney - [Frappe: Functional Reactive Programming in Java](http://haskell.cs.yale.edu/wp-content/uploads/2011/02/frappe-padl01.pdf)
-
-A.Courtney, C.Elliot - [Genuinely Functional User Interfaces](http://haskell.cs.yale.edu/wp-content/uploads/2011/02/genuinely-functional-guis.pdf)
-
-E.Czaplicki - [ELM](http://elm-lang.org/papers/concurrent-frp.pdf)
-
-C.Elliot, P.Hudak - [Functional Reactive Animation](http://conal.net/papers/icfp97/icfp97.pdf)
-
-C.Elliot - [Push-pull functional reactive programming](http://conal.net/papers/push-pull-frp/push-pull-frp.pdf)
-
-I.Maier, T.Rompf, M.Odersky - [Deprecating the Observer Pattern](http://lamp.epfl.ch/~imaier/pub/DeprecatingObserversTR2010.pdf)
-
-L.Meyerovich - [Flapjax: Functional Reactive Web Programming](http://www.cs.brown.edu/research/pubs/theses/ugrad/2007/lmeyerov.pdf)
-
-
-License
-=======
+# License
 
 Copyright 2014 F.Riemenschneider
 

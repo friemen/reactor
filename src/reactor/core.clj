@@ -463,9 +463,10 @@
         b      (atom {:queue [] :dequeued nil})
         task   (atom nil)
         enq    (fn [{:keys [queue] :as q} x]
-                 (if (and (> n 0) (>= (c/count queue) n))
-                   (assoc q :queue [x] :dequeued queue)
-                   (assoc q :queue (conj queue x) :dequeued nil)))
+                 (let [new-queue (conj queue x)]
+                   (if (and (> n 0) (>= (c/count new-queue) n))
+                     (assoc q :queue [] :dequeued new-queue)
+                     (assoc q :queue new-queue :dequeued nil))))
         deq    (fn [{:keys [queue] :as q}]
                  (assoc q :queue [] :dequeued queue))]
     (derive-new eventstream "buffer" [r]
@@ -474,7 +475,7 @@
                   (let [output         (first output-reactives)
                         {vs :dequeued
                          queue :queue} (c/swap! b enq (fvalue input-rvts))]
-                    (when (and (= 1 (c/count queue)) (> millis 0))
+                    (when (and (>= 1 (c/count queue)) (> millis 0))
                       (c/swap! task (fn [_]
                                     (sched/once s millis
                                                 (fn []

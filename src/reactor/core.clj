@@ -101,7 +101,7 @@
   "Takes an id and a vector of symbol-expr bindings, creates a new
   network, puts the binding pairs in a let and returns a map that
   contains the symbols as keys and the values of the expressions as
-  values.  The expressions are evaluated in a with-context (i.e. the
+  values.  The expressions are evaluated in a r/with (i.e. the
   new network is dynamically bound to reactnet.core/*netref*).  
   An additional :netref key in the resulting map points to the new network."
   [id & let-pairs]
@@ -129,9 +129,12 @@
 
 (defn complete!
   "Complete the given reactives."
-  [& rs]
-  (doseq [r rs]
-    (rn/complete! r)))
+  ([r]
+     (complete! *netref* r))
+  ([n r & rs]
+     (doseq [r (cons r rs)]
+       (assert (reactive? r))
+       (rn/complete! n r))))
 
 
 (defn reset-network!
@@ -700,7 +703,8 @@
 
 (defn map
   "Returns an eventstream that emits the results of application of f
-  whenever all reactives in rs have items available."
+  whenever all reactives in rs have items available. You can mix
+  eventstreams and behaviors."
   [f & rs]
   {:pre [(fn-spec? f) (every? reactive? rs)]
    :post [(reactive? %)]}

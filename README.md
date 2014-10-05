@@ -133,11 +133,17 @@ latest stock price:
   (rand-nth (range 1 10)))
 ```
 
-We'll need two other functions, the first is a predicate yielding true if
-all numbers in xs are monotonically increasing, the second is the
-dummy action implementation.
+We'll need some helper functions, the first creates a reduction
+function to buffer items, the second is a predicate yielding true if
+all numbers in xs are monotonically increasing, the third is the dummy
+action implementation.
 
 ```clojure
+(defn sliding-buffer
+  [n]
+  (fn [buf x]
+    (conj (vec (drop (- (count buf) (dec n)) buf)) x)))
+
 (defn increasing?
   [xs]
   (->> xs
@@ -160,10 +166,7 @@ We connect these by the following expression:
 
 ```clojure
 (r/with n (->> (r/sample 1000 stock-price)
-               (r/scan (fn [buf p]
-                         (conj (vec (drop (- (count buf) 2) buf))
-                               p))
-                       [])
+               (r/scan (sliding-buffer 3) [])
                (r/filter #(>= (count %) 3))
                (r/filter increasing?)
                (r/subscribe send-mail!)))
@@ -172,11 +175,10 @@ We connect these by the following expression:
 `(r/sample millis f)` invokes the given no-arg function `f` every
 `millis` milliseconds.
 
-`(r/buffer-c n r)` uses a fixed-size buffer that emits a vector
-of items whenever the eventstream `r` emitted `n` items.
+`(r/scan f initial-value r)` buildx a buffer using the reduction function f.
 
 The resulting chain of function applications may look unfamiliar,
-however it is quite readable.
+it's pretty declarative.
 
 
 ### Asynchronity on-demand
@@ -198,10 +200,7 @@ Here's the example from above with explicit asynchronity:
 
 ```clojure
 (r/with n (->> (r/sample 1000 (r/in-future stock-price))
-               (r/scan (fn [buf p]
-                         (conj (vec (drop (- (count buf) 2) buf))
-                               p))
-                       [])
+               (r/scan (sliding-buffer 3) [])
                (r/filter #(>= (count %) 3))
                (r/filter increasing?)
                (r/subscribe (r/in-future send-mail!))))

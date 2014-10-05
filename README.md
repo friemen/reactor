@@ -173,12 +173,14 @@ We connect these by the following expression:
 ```
 
 `(r/sample millis f)` invokes the given no-arg function `f` every
-`millis` milliseconds.
+`millis` milliseconds and emits the result.
 
-`(r/scan f initial-value r)` buildx a buffer using the reduction function f.
+`(r/scan f initial-value r)` applies reduction function `f` to latest
+result (or `initial-value`) and the latest items from `r`. Each result
+is emitted.
 
 The resulting chain of function applications may look unfamiliar,
-it's pretty declarative.
+however it's pretty declarative.
 
 
 ### Asynchronity on-demand
@@ -234,7 +236,7 @@ application.
 A behavior emits a value whenever it receives a new value which is
 different from its current value. Hence, there is no need to convert a
 behavior to an eventstream. To create a behavior from an eventstream
-you'll need to use `r/hold`.
+you'll use `r/hold`.
 
 You can push a value to an eventstream or behavior using `(r/push! n r
 v)`, where `n` is the associated network, `r` is the reactive and `v`

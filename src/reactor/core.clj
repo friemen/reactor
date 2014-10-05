@@ -1011,6 +1011,11 @@
     (behavior x :label label)))
 
 
+(defn- as-set
+  [x]
+  (if (coll? x) (set x) (set (list x))))
+
+
 (defn ^:no-doc and-f
   [& xs]
   (if (next xs)
@@ -1052,6 +1057,20 @@
                                                       first)]
                                 expr-value)))))
 
+(defn ^:no-doc lift-case
+  [expr-b test-value-sets expr-bs]
+  (derive-new behavior "lift-case" (c/into [expr-b] expr-bs)
+              :link-fn
+              (make-link-fn (fn [v & rvs]
+                              (let [rs (c/remove nil? (c/map #(if (%1 v) %2)
+                                                             test-value-sets rvs))]
+                                (if (seq rs)
+                                  (first rs)
+                                  (let [default (last rvs)]
+                                    (if (= ::no-default default)
+                                      (throw (IllegalArgumentException. (str "No matching clause for " v)))
+                                      default))))))))
+
 (defn- lift-exprs
   [exprs]
   (c/map (fn [expr] `(lift ~expr)) exprs))
@@ -1060,7 +1079,7 @@
 (defn- lift-dispatch
   [expr]
   (if (list? expr)
-    (if (#{'if 'cond 'let 'and 'or} (first expr))
+    (if (#{'if 'cond 'case 'let 'and 'or} (first expr))
       (first expr)
       'fn-apply)
     'symbol))
@@ -1075,7 +1094,7 @@
   Returns a behavior that is updated whenever a value 
   of a behavior referenced in the expression is updated.
 
-  Supports function application, let, cond, and, or."
+  Supports function application, let, cond, case, and, or."
   [expr]
   (lift* expr))
 
@@ -1107,6 +1126,23 @@
 (defmethod lift* 'cond
   [[_ & exprs]]
   `(lift-cond ~@(lift-exprs exprs)))
+
+
+(defmethod lift* 'case
+  [[_ expr & clauses]]
+  (let [default   (if (odd? (c/count clauses))
+                    (last clauses)
+                    ::no-default)
+        test-sets (->> clauses
+                       (partition 2)
+                       (c/map first)
+                       (c/map as-set))
+        exprs     (conj (->> clauses
+                             (c/drop 1)
+                             (take-nth 2)
+                             vec)
+                        default)]
+    `(lift-case (lift ~expr) [~@test-sets] [~@(lift-exprs exprs)])))
 
 
 (defmethod lift* 'and

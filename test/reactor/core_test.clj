@@ -156,7 +156,9 @@
     (let [r   (atom [])
           e1  (r/eventstream)
           c   (->> e1 (r/buffer-c 2) (r/swap! r conj))]
-      (apply push-and-wait! (interleave (repeat e1) [1 2 3 4 5 6 7]))
+      (push-and-wait! e1 1 e1 2)
+      (is (= [[1 2]] @r))
+      (apply push-and-wait! (interleave (repeat e1) [3 4 5 6 7]))
       (is (= [[1 2] [3 4] [5 6]] @r))
       (complete! e1)
       (wait)
@@ -566,6 +568,43 @@
     (is (= @z 8))
     (push-and-wait! x 10)
     (is (= @z 10))))
+
+
+(deftest lift-case-test
+  (testing "Happy cases"
+    (let [x (r/behavior 2 :label "x")
+          y (r/behavior "none" :label "y")
+          z (r/lift (+ x (case y
+                           "none"         0
+                           ("few" "low")  1
+                           "high"        10
+                           "x"            x
+                           5)))]
+      (wait)
+      (is (= @z 2))
+      (push-and-wait! y "high")
+      (is (= @z 12))
+      (push-and-wait! y "nope")
+      (is (= @z 7))
+      (push-and-wait! y "x")
+      (is (= @z 4))
+      (push-and-wait! x 42)
+      (is (= @z 84))))
+  (testing "Error case"
+    (let [x (r/behavior 1)
+          y (r/behavior 0)
+          z (r/lift (case (+ x y)
+                      1       "low"
+                      (2 3 4) "mid"
+                      5       "high"))
+          error (r/behavior nil)]
+      (r/err-into error z)
+      (wait)
+      (is (= @z "low"))
+      (push-and-wait! y 3)
+      (is (= @z "mid"))
+      (push-and-wait! x 3)
+      (is (= (-> error deref :exception type) IllegalArgumentException)))))
 
 
 (deftest lift-and-test

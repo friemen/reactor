@@ -157,9 +157,14 @@ Again, we create a network instance:
 
 We connect these by the following expression:
 
+
 ```clojure
 (r/with n (->> (r/sample 1000 stock-price)
-               (r/buffer-c 3)
+               (r/scan (fn [buf p]
+                         (conj (vec (drop (- (count buf) 2) buf))
+                               p))
+                       [])
+               (r/filter #(>= (count %) 3))
                (r/filter increasing?)
                (r/subscribe send-mail!)))
 ```
@@ -193,7 +198,11 @@ Here's the example from above with explicit asynchronity:
 
 ```clojure
 (r/with n (->> (r/sample 1000 (r/in-future stock-price))
-               (r/buffer-c 3)
+               (r/scan (fn [buf p]
+                         (conj (vec (drop (- (count buf) 2) buf))
+                               p))
+                       [])
+               (r/filter #(>= (count %) 3))
                (r/filter increasing?)
                (r/subscribe (r/in-future send-mail!))))
 ```

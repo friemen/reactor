@@ -176,7 +176,7 @@ We connect these by the following expression:
 `millis` milliseconds and emits the result.
 
 `(r/scan f initial-value r)` applies reduction function `f` to latest
-result (or `initial-value`) and the latest items from `r`. Each result
+result (or `initial-value`) and the latest item from `r`. Each result
 is emitted.
 
 The resulting chain of function applications may look unfamiliar,
@@ -258,6 +258,8 @@ You can do dataflow programming on behaviors by *lifting*
 expressions. An example:
 
 TODO
+
+
 
 
 ## More Examples

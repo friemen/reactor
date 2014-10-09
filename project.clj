@@ -1,4 +1,4 @@
-(defproject reactor "0.7.1"
+(defproject reactor "0.7.2-SNAPSHOT"
   :description "Reactive programming with eventstreams and behaviors"
   :url "https://github.com/friemen/reactor"
   :license {:name "Eclipse Public License"

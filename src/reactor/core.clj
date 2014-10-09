@@ -116,14 +116,24 @@
 
 
 (defn push!
-  "Push a value to a reactive (or, pair-wise, many values to many reactives)."
+  "Push a value to a reactive (or, pair-wise, many values to many reactives).
+  m can be a netref or a map containing a :netref key. r can be a keyword
+  to be lookup in n or a reactive."
   ([r v]
      (push! *netref* r v))
   ([n r v & rvs]
-     (rn/push! n r v)
-     (doseq [[r v] (partition 2 rvs)]
-       (assert (reactive? r))
-       (rn/push! r v))
+     (let [netref (if-let [netref (:netref n)] netref n)
+           rs     (->> rvs
+                       (take-nth 2)
+                       (cons r)
+                       (c/map #(if (keyword? %) (% n) %)))
+           vs     (->> rvs
+                       (c/drop 1)
+                       (take-nth 2)
+                       (cons v))]
+       (doseq [[r v] (c/map vector rs vs)]
+         (assert (reactive? r))
+         (rn/push! netref r v)))
      v))
 
 

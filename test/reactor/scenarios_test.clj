@@ -31,7 +31,7 @@
 (defn get-offer-stream
   [[request vendor]]
   (->> (r/merge (->> (r/just {vendor -1}) (r/delay 20))
-                (r/just (r/in-future #(get-offer vendor request))))
+                (r/eval (r/in-future #(get-offer vendor request))))
        (r/take 1)))
 
 

@@ -1,7 +1,7 @@
 (ns reactor.core
   "Factories and combinators for behaviors and eventstreams."
   (:refer-clojure :exclude [concat count delay distinct drop drop-while
-                            drop-last filter into merge map mapcat reduce
+                            drop-last eval filter into merge map mapcat reduce
                             remove some swap! take take-last take-while])
   (:require [clojure.core :as c]
             [clojure.string :as s]
@@ -185,7 +185,6 @@
    #(try (f-or-ref-or-value)
          (catch Exception ex
            (do (.printStackTrace ex)
-               ;; TODO what to push in case f fails?
                ex)))
    (instance? clojure.lang.IDeref f-or-ref-or-value)
    #(deref f-or-ref-or-value)
@@ -357,7 +356,8 @@
 
 (declare seqstream)
 
-(defn just
+
+(defn eval
   "Returns an eventstream that evaluates x, provides the result and completes.
 
   x can be: 
@@ -366,7 +366,7 @@
   - an IDeref implementation, or 
   - a value."
   [{:keys [executor f] :as x}]
-  (let [new-r  (eventstream :label (unique-name "just"))
+  (let [new-r  (eventstream :label (unique-name "eval"))
         f      (sample-fn (if (and executor f) f x))
         task-f (fn []
                  (rn/push! new-r (f))
@@ -374,6 +374,16 @@
     (if executor
       (execute executor *netref* task-f)
       (task-f))
+    new-r))
+
+
+(defn just
+  "Returns an eventstream that contains x, and completes after
+  consumption of x."
+  [x]
+  (let [new-r (eventstream :label (unique-name "eval"))]
+    (rn/push! new-r x)
+    (rn/push! new-r ::rn/completed)
     new-r))
 
 

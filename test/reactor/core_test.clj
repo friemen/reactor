@@ -49,19 +49,10 @@
     (is (= (range 10) (->> r deref (map second))))))
 
 
-(deftest just-test
-  (testing "Just one value"
-    (let [r  (atom [])
-          j  (r/just 42)]
-      (wait)
-      (is (rn/pending? j))
-      (r/swap! r conj j)
-      (wait)
-      (is (= [42] @r))
-      (is (rn/completed? j))))
+(deftest eval-test
   (testing "A function invocation"
     (let [r  (atom [])
-          e  (->> (constantly :foo) r/just (r/swap! r conj))]
+          e  (->> (constantly :foo) (r/eval) (r/swap! r conj))]
       (wait)
       (is (= [:foo] @r))))
   (testing "A future"
@@ -69,12 +60,32 @@
           e  (->> (r/in-future (fn [] 
                                  (Thread/sleep 300)
                                  :foo))
-                  r/just
+                  (r/eval)
                   (r/swap! r conj))]
       (wait)
       (is (= [] @r))
       (wait)
-      (is (= [:foo] @r)))))
+      (is (= [:foo] @r))))
+  (testing "An IDeref instance"
+    (let [i (atom "noob")
+          r (atom [])
+          e (->> (r/eval i)
+                 (r/swap! r conj))]
+      (wait)
+      (is (= ["noob"] @r))
+      (is (rn/completed? e)))))
+
+
+(deftest just-test
+  (testing "Just a value"
+    (let [r  (atom [])
+          j  (r/just 42)]
+      (wait)
+      (is (rn/pending? j))
+      (r/swap! r conj j)
+      (wait)
+      (is (= [42] @r))
+      (is (rn/completed? j)))))
 
 
 (deftest sample-test

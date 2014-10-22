@@ -272,4 +272,4 @@ See [reactor-samples project](https://github.com/friemen/reactor-samples).
 
 Copyright 2014 F.Riemenschneider
 
-Distributed under the Eclipse Public License, the same as Clojure.
+Distributed under the Eclipse Public License 1.0, the same as Clojure.

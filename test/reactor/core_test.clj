@@ -133,15 +133,26 @@
 ;; Tests of combinators
 
 (deftest amb-test
-  (let [r   (atom [])
-        e1  (r/eventstream)
-        e2  (r/eventstream)
-        c   (->> (r/amb e1 e2) (r/swap! r conj))]
-    (push-and-wait! e2 :foo e1 :bar e2 :baz)
-    (is (= [:foo :baz] @r))
-    (complete! e2)
-    (wait)
-    (is (rn/completed? c))))
+  (testing "Following a stream until completion."
+    (let [r   (atom [])
+          e1  (r/eventstream)
+          e2  (r/eventstream)
+          c   (->> (r/amb e1 e2) (r/swap! r conj))]
+      (push-and-wait! e2 :foo e1 :bar e2 :baz)
+      (is (= [:foo :baz] @r))
+      (r/complete! e2)
+      (wait)
+      (is (rn/completed? c))))
+  (testing "Following no stream, until all complete"
+    (let [r   (atom [])
+          e1  (r/eventstream)
+          e2  (r/eventstream)
+          c   (->> (r/amb e1 e2) (r/swap! r conj))]
+      (r/complete! e1)
+      (r/complete! e2)
+      (wait)
+      (is (= [] @r))
+      (is (rn/completed? c)))))
 
 
 (deftest any-test
@@ -150,7 +161,8 @@
           e1  (r/eventstream)
           c   (->> e1 r/any (r/swap! r conj))]
       (apply push-and-wait! (interleave (repeat e1) [false true]))
-      (is (= [true] @r))))
+      (is (= [true] @r))
+      (is (rn/completed? c))))
   (testing "False is emitted only after completion."
     (let [r   (atom [])
           e1  (r/eventstream)
@@ -159,7 +171,8 @@
       (is (= [] @r))
       (complete! e1)
       (wait)
-      (is (= [false] @r)))))
+      (is (= [false] @r))
+      (is (rn/completed? c)))))
 
 
 (deftest buffer-test

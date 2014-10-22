@@ -455,18 +455,24 @@
   {:pre [(every? reactive? rs)]
    :post [(reactive? %)]}
   (let [new-r   (eventstream :label (unique-name "amb"))
+        active  (atom (->> rs (c/remove rn/completed?) (set)))
         f       (fn [{:keys [input-reactives input-rvts] :as input}]
                   (let [r (first input-reactives)]
                     {:remove-by #(= (link-outputs %) [new-r])
                      :add [(make-link "amb-selected" [r] [new-r] :complete-on-remove [new-r])]
                      :output-rvts (single-value (fvalue input-rvts) new-r)}))
-        links   (->> rs (c/map #(make-link "amb-tentative" [%] [new-r] :link-fn f)))]
+        links   (->> rs (c/map #(make-link "amb-tentative" [%] [new-r]
+                                           :link-fn f
+                                           :complete-fn
+                                           (fn [_ r]
+                                             (if (empty? (c/swap! active disj r))
+                                               {:output-rvts (single-value ::rn/completed new-r)})))))]
     (apply (partial add-links! *netref*) links)
     new-r))
 
 
 (defn any
-  "Returns an eventstream that provides true as soon as there occurs one
+  "Returns an eventstream that emits true as soon as there occurs one
   truthy value in eventstream r."
   ([r]
      (any identity r))
@@ -558,8 +564,8 @@
 
 
 (defn count
-  "Returns an eventstream that emits the number of items that were
-  emitted by r."
+  "Returns an eventstream that emits with each item the number of
+  items that were emitted by r so far."
   [r]
   {:pre [(reactive? r)]
    :post [(reactive? %)]}
@@ -1118,7 +1124,7 @@
   Returns a behavior that is updated whenever a value 
   of a behavior referenced in the expression is updated.
 
-  Supports function application, let, cond, case, and, or."
+  Supports function application, let, if, cond, case, and, or."
   [expr]
   (lift* expr))
 

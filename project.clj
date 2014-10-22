@@ -1,10 +1,10 @@
-(defproject reactor "0.7.2-SNAPSHOT"
+(defproject reactor "0.7.2"
   :description "Reactive programming with eventstreams and behaviors"
   :url "https://github.com/friemen/reactor"
   :license {:name "Eclipse Public License"
             :url "http://www.eclipse.org/legal/epl-v10.html"}
   :dependencies [[org.clojure/clojure "1.5.1"]
-                 [reactnet "0.7.0"]]
+                 [reactnet "0.7.1"]]
   :plugins [[codox "0.8.10"]]
   :codox {:defaults {}
           :sources ["src"]

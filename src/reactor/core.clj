@@ -856,13 +856,6 @@
                     {:output-rvts (broadcast-value vs output-reactives)})))))
 
 
-(defn startwith
-  "Returns an eventstream that first emits items from start-r until
-  completion, then emits items from r."
-  [start-r r]
-  (concat start-r r))
-
-
 (defn switch
   "Returns an eventstream that emits items from the latest reactive
   emitted by r."
@@ -941,8 +934,9 @@
               (fn [{:keys [input-rvts output-reactives] :as input}]
                 (if (apply pred (values input-rvts))
                   {:output-rvts (single-value (fvalue input-rvts) (first output-reactives))}
-                  {:no-consume true
-                   :remove-by #(= (link-outputs %) output-reactives)}))))
+                  {:no-consume  true
+                   :output-rvts (single-value ::rn/completed (first output-reactives))
+                   :remove-by   #(= (link-outputs %) output-reactives)}))))
 
 
 (defn take
@@ -980,6 +974,16 @@
                 (fn [l r]
                   {:output-rvts (enqueue-values (-> q deref :queue)
                                                 (-> l link-outputs first))}))))
+
+
+(defn take-t
+  "Returns an eventstream that emits items from r for millis
+  milliseconds."
+  [millis r]
+  (let [start-t (now)]
+    (take-while (fn [_]
+                  (<= (- (now) start-t) millis))
+                r)))
 
 
 (defn throttle

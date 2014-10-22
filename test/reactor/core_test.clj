@@ -492,11 +492,26 @@
 
 
 (deftest take-while-test
-  (let [r  (atom [])
-        e  (r/eventstream)
-        c  (->> e (r/take-while (partial >= 5)) (r/swap! r conj))]
-    (apply push-and-wait! (interleave (repeat e) (range 10)))
-    (is (= [0 1 2 3 4 5] @r))))
+  (testing "Take while condition returns true"
+    (let [r  (atom [])
+          e  (r/eventstream)
+          c  (->> e (r/take-while (partial >= 5)) (r/swap! r conj))]
+      (apply push-and-wait! (interleave (repeat e) (range 10)))
+      (is (= [0 1 2 3 4 5] @r))
+      (is (rn/completed? c))))
+  (testing "Completes empty when condition fails immediatly"
+    (let [r  (atom [])
+          e  (r/eventstream)
+          c  (->> e (r/take-while (partial >= 5)) (r/swap! r conj))]
+      (push-and-wait! e 6)
+      (is (= [] @r))
+      (is (rn/completed? c))))
+  (testing "Take while completes when underlying stream completes"
+    (let [e  (r/eventstream)
+          c  (r/take-while (partial >= 5) e)]
+      (complete! e)
+      (wait)
+      (is (rn/completed? c)))))
 
 
 (deftest throttle-test

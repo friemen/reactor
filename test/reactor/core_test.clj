@@ -268,9 +268,11 @@
         e  (r/eventstream)
         c  (->> e (r/delay 500) (r/swap! r conj))]
     (push-and-wait! e :foo)
+    (r/complete! e)
     (is (= [] @r))
     (wait 500)
-    (is (= [:foo] @r))))
+    (is (= [:foo] @r))
+    (is (rn/completed? c))))
 
 
 (deftest distinct-test
@@ -278,7 +280,10 @@
         e  (r/eventstream)
         c  (->> e r/distinct (r/swap! r conj))]
     (push-and-wait! e :foo e :bar e :foo e :baz e :bar)
-    (is (= [:foo :bar :baz] @r))))
+    (is (= [:foo :bar :baz] @r))
+    (r/complete! e)
+    (wait)
+    (is (rn/completed? c))))
 
 
 (deftest drop-test
@@ -411,7 +416,10 @@
         e  (r/eventstream)
         c  (->> e (r/mapcat :items) (r/swap! r conj))]
     (push-and-wait! e {:name "Me" :items ["foo" "bar" "baz"]})
-    (is (= ["foo" "bar" "baz"] @r))))
+    (is (= ["foo" "bar" "baz"] @r))
+    (r/complete! e)
+    (wait)
+    (is (rn/completed? c))))
 
 
 (deftest merge-test
@@ -435,7 +443,7 @@
       (is (rn/completed? c)))))
 
 
-(deftest reduce-t
+(deftest reduce-test
   (let [r      (atom [])
         values (range 1 5)
         e      (r/eventstream)
@@ -444,7 +452,8 @@
     (is (= [] @r))
     (complete! e)
     (wait)
-    (is (= [10] @r))))
+    (is (= [10] @r))
+    (is (rn/completed? c))))
 
 
 (deftest remove-test
@@ -463,7 +472,10 @@
         e      (r/eventstream)
         c      (->> e (r/scan + 0) (r/swap! r conj))]
     (apply push-and-wait! (interleave (repeat e) values))
-    (is (= [1 3 6 10] @r))))
+    (is (= [1 3 6 10] @r))
+    (r/complete! e)
+    (wait)
+    (is (rn/completed? c))))
 
 
 (deftest sliding-buffer-test
@@ -481,7 +493,10 @@
         e   (r/eventstream)
         c   (->> e (r/snapshot b) (r/swap! r conj))]
     (push-and-wait! e 1 b 43 e 2 e 3)
-    (is (= [42 43 43] @r))))
+    (is (= [42 43 43] @r))
+    (r/complete! e)
+    (wait)
+    (is (rn/completed? c))))
 
 
 (deftest switch-test
@@ -510,9 +525,10 @@
         c  (->> e (r/take-last 3) (r/swap! r conj))]
     (apply push-and-wait! (interleave (repeat e) (range 5)))
     (is (= [] @r))
-    (complete! e)
+    (r/complete! e)
     (wait)
-    (is (= [2 3 4] @r))))
+    (is (= [2 3 4] @r))
+    (is (rn/completed? c))))
 
 
 (deftest take-while-test
@@ -533,7 +549,7 @@
   (testing "Take while completes when underlying stream completes"
     (let [e  (r/eventstream)
           c  (r/take-while (partial >= 5) e)]
-      (complete! e)
+      (r/complete! e)
       (wait)
       (is (rn/completed? c)))))
 
@@ -558,7 +574,10 @@
       (wait 200)
       (is (= [[0 1 2 3 4]] @r))
       (wait 400)
-      (is (= [[0 1 2 3 4] [5 6]] @r)))))
+      (is (= [[0 1 2 3 4] [5 6]] @r))
+      (r/complete! e)
+      (wait)
+      (is (rn/completed? c)))))
 
 
 (deftest unsubscribe-test

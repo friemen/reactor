@@ -143,7 +143,7 @@
       (r/complete! e2)
       (wait)
       (is (rn/completed? c))))
-  (testing "Following no stream, until all complete"
+  (testing "Following no stream, until all complete."
     (let [r   (atom [])
           e1  (r/eventstream)
           e2  (r/eventstream)
@@ -169,7 +169,7 @@
           c   (->> e1 r/any (r/swap! r conj))]
       (apply push-and-wait! (interleave (repeat e1) [false false]))
       (is (= [] @r))
-      (complete! e1)
+      (r/complete! e1)
       (wait)
       (is (= [false] @r))
       (is (rn/completed? c)))))
@@ -184,9 +184,10 @@
       (is (= [[1 2]] @r))
       (apply push-and-wait! (interleave (repeat e1) [3 4 5 6 7]))
       (is (= [[1 2] [3 4] [5 6]] @r))
-      (complete! e1)
+      (r/complete! e1)
       (wait)
-      (is (= [[1 2] [3 4] [5 6] [7]] @r))))
+      (is (= [[1 2] [3 4] [5 6] [7]] @r))
+      (is (rn/completed? c))))
   (testing "Buffer by time"
     (let [r   (atom [])
           e1  (r/eventstream)
@@ -204,9 +205,10 @@
       (wait 500)
       (is (= [[42 43 44] [45]] @r))
       (push! e1 46)
-      (complete! e1)
+      (r/complete! e1)
       (wait)
-      (is (= [[42 43 44] [45] [46]] @r)))))
+      (is (= [[42 43 44] [45] [46]] @r))
+      (is (rn/completed? c)))))
 
 
 (deftest changes-test
@@ -214,7 +216,10 @@
         b   (r/behavior nil)
         c   (->> b r/changes (r/swap! r conj))]
     (push-and-wait! b 1 b 1 b 42)
-    (is (= [[nil 1] [1 42]] @r))))
+    (is (= [[nil 1] [1 42]] @r))
+    (r/complete! b)
+    (wait)
+    (is (rn/completed? c))))
 
 
 (deftest concat-test
@@ -225,7 +230,10 @@
         c   (->> e1 (r/concat s e1 e2) (r/swap! r conj))]
     (push-and-wait! e2 1 e2 2 e2 3
                 e1 "FOO" e1 "BAR" e1 ::rn/completed)
-    (is (= [:foo :bar :baz "FOO" "BAR" 1 2 3] @r))))
+    (is (= [:foo :bar :baz "FOO" "BAR" 1 2 3] @r))
+    (r/complete! e2)
+    (wait)
+    (is (rn/completed? c))))
 
 
 (deftest count-test
@@ -249,7 +257,10 @@
     (is (= [:baz] @r))
     (rn/push! e :foo)
     (wait 300)
-    (is (= [:baz :foo] @r))))
+    (is (= [:baz :foo] @r))
+    (complete! e)
+    (wait)
+    (is (rn/completed? c))))
 
 
 (deftest delay-test

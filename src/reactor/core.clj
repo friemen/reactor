@@ -594,10 +594,11 @@
                         s      (scheduler netref)
                         new-t  (sched/once s millis #(rn/enq netref {:rvt-map {output [v (now)]}
                                                                      :results [{:allow-complete #{output}}]}))]
-                    (when (and old-t (sched/pending? old-t))
-                      (sched/cancel old-t))
                     (reset! task new-t)
-                  {:dont-complete #{output}})))))
+                    (if (and old-t (sched/pending? old-t))
+                      (do (sched/cancel old-t)
+                          nil)
+                      {:dont-complete #{output}}))))))
 
 
 (defn delay
